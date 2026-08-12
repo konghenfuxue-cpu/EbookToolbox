@@ -1,7 +1,7 @@
 [project]
 name = "ebooktoolbox"
 version = "0.1.0"
-description = "Add your description here"
+description = "A maintainable PySide6 desktop toolbox for ebook workflows"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -9,13 +9,21 @@ dependencies = [
     "qt-material>=2.17",
 ]
 
-[[tool.uv.index]]
-url = "https://pypi.tuna.tsinghua.edu.cn/simple"
-default = true
-
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
     "pytest-qt>=4.5.0",
     "ruff>=0.16.2",
 ]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
