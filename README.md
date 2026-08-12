@@ -72,3 +72,31 @@ tests/gui/                 # pytest-qt 界面测试
 
 当前版本只建立可扩展的 GUI 基础架构。旧脚本迁移、EPUB 读写、批处理和后台任务框架
 将在后续阶段逐步实现；应用不会在现阶段修改任何电子书文件。
+
+## EPUB 图片压缩 core（第一版）
+
+仓库现已提供不依赖 Qt 的单本 EPUB 图片压缩 core，位于
+`src/ebook_toolbox/services/epub_image_compressor/`。它处理 JPEG、PNG 和静态 WebP，
+原样保留 GIF，并在遇到多帧 PNG/WebP 时跳过并返回 warning。默认配置跳过封面，
+且不会覆盖源 EPUB 或已有输出。
+
+```python
+from pathlib import Path
+
+from ebook_toolbox.services.epub_image_compressor import (
+    BALANCED,
+    CompressionRequest,
+    compress_epub,
+)
+
+result = compress_epub(
+    CompressionRequest(source=Path("book.epub"), profile=BALANCED)
+)
+if result.success:
+    print(result.output)
+else:
+    print(result.errors)
+```
+
+当前版本只有同步的纯 Python core 和自动化测试，尚未接入 PySide6 页面、后台任务、
+批处理或 CLI。调用方应检查 `result.success`、`result.errors` 和 `result.warnings`。
