@@ -20,6 +20,7 @@ from ebook_toolbox.services.epub_image_compressor import (
     compress_epub,
 )
 from ebook_toolbox.services.epub_image_compressor import archive as archive_module
+from ebook_toolbox.services.epub_image_compressor import compressor as compressor_module
 from ebook_toolbox.services.epub_image_compressor import images as images_module
 
 CONTAINER = b'''<?xml version="1.0"?>
@@ -356,6 +357,141 @@ def test_output_mimetype_is_first_and_stored(tmp_path):
         assert first.compress_type == zipfile.ZIP_STORED
 
 
+def test_temporary_output_resists_symlink_insertion_before_build(tmp_path, monkeypatch):
+    source = tmp_path / "source.epub"
+    output = tmp_path / "output.epub"
+    victim = tmp_path / "victim.txt"
+    victim_data = b"must remain unchanged"
+    make_epub(source)
+    victim.write_bytes(victim_data)
+    real_build = compressor_module.build_epub
+    observed_temporary = None
+
+    def attack_before_build(root, temporary_file):
+        nonlocal observed_temporary
+        observed_temporary = Path(temporary_file.name)
+        with pytest.raises(OSError):
+            observed_temporary.symlink_to(victim)
+        assert observed_temporary.is_file()
+        assert not observed_temporary.is_symlink()
+        real_build(root, temporary_file)
+
+    monkeypatch.setattr(compressor_module, "build_epub", attack_before_build)
+
+    result = compress_epub(CompressionRequest(source, output=output))
+
+    assert result.success
+    assert victim.read_bytes() == victim_data
+    assert observed_temporary is not None
+    assert not observed_temporary.exists()
+    archive_module.validate_output(output)
+
+
+def test_temporary_output_remains_owned_throughout_build(tmp_path, monkeypatch):
+    source = tmp_path / "source.epub"
+    output = tmp_path / "output.epub"
+    make_epub(source, {"page.jpg": image_bytes("JPEG")})
+    real_build = compressor_module.build_epub
+    real_write = archive_module.zipfile.ZipFile.write
+    temporary_path = None
+    temporary_identity = None
+    ownership_checks = 0
+
+    def track_build(root, temporary_file):
+        nonlocal temporary_path, temporary_identity
+        temporary_path = Path(temporary_file.name)
+        temporary_identity = os.fstat(temporary_file.fileno())
+        real_build(root, temporary_file)
+
+    def check_each_write(zip_file, *args, **kwargs):
+        nonlocal ownership_checks
+        assert temporary_path is not None
+        assert temporary_identity is not None
+        archive_module.ensure_owned_temporary(temporary_path, temporary_identity)
+        ownership_checks += 1
+        return real_write(zip_file, *args, **kwargs)
+
+    monkeypatch.setattr(compressor_module, "build_epub", track_build)
+    monkeypatch.setattr(archive_module.zipfile.ZipFile, "write", check_each_write)
+
+    result = compress_epub(CompressionRequest(source, output=output))
+
+    assert result.success
+    assert ownership_checks >= 3
+    assert temporary_path is not None
+    assert not temporary_path.exists()
+    archive_module.validate_output(output)
+
+
+def test_build_failure_cleans_only_owned_temporary_output(tmp_path, monkeypatch):
+    source = tmp_path / "source.epub"
+    output = tmp_path / "output.epub"
+    make_epub(source)
+    temporary_path = None
+
+    def fail_build(_root, temporary_file):
+        nonlocal temporary_path
+        temporary_path = Path(temporary_file.name)
+        temporary_file.write(b"partial output")
+        temporary_file.flush()
+        raise OSError("simulated build failure")
+
+    monkeypatch.setattr(compressor_module, "build_epub", fail_build)
+
+    result = compress_epub(CompressionRequest(source, output=output))
+
+    assert not result.success
+    assert any(error.message == "simulated build failure" for error in result.errors)
+    assert temporary_path is not None
+    assert not temporary_path.exists()
+    assert not output.exists()
+    assert not list(tmp_path.glob(".output.epub.*.tmp"))
+
+
+def test_validation_failure_cleans_owned_temporary_output(tmp_path, monkeypatch):
+    source = tmp_path / "source.epub"
+    output = tmp_path / "output.epub"
+    make_epub(source)
+
+    def fail_validation(_temporary_file):
+        raise archive_module.ArchiveError("simulated validation failure")
+
+    monkeypatch.setattr(compressor_module, "validate_output", fail_validation)
+
+    result = compress_epub(CompressionRequest(source, output=output))
+
+    assert not result.success
+    assert any(error.message == "simulated validation failure" for error in result.errors)
+    assert not output.exists()
+    assert not list(tmp_path.glob(".output.epub.*.tmp"))
+
+
+def test_replaced_temporary_is_rejected_and_not_cleaned(tmp_path, monkeypatch):
+    source = tmp_path / "source.epub"
+    output = tmp_path / "output.epub"
+    replacement_data = b"foreign temporary replacement"
+    make_epub(source)
+    real_publish = compressor_module.publish_epub
+    temporary_path = None
+
+    def replace_before_publish(temporary, destination, **kwargs):
+        nonlocal temporary_path
+        temporary_path = temporary
+        temporary.unlink()
+        temporary.write_bytes(replacement_data)
+        real_publish(temporary, destination, **kwargs)
+
+    monkeypatch.setattr(compressor_module, "publish_epub", replace_before_publish)
+
+    result = compress_epub(CompressionRequest(source, output=output))
+
+    assert not result.success
+    assert any(error.code == "ArchiveError" for error in result.errors)
+    assert temporary_path is not None
+    assert temporary_path.read_bytes() == replacement_data
+    assert not output.exists()
+
+
 def test_existing_output_is_not_overwritten(tmp_path):
     source = tmp_path / "source.epub"
     output = tmp_path / "existing.epub"
@@ -515,6 +651,42 @@ def test_concurrent_publish_uses_call_owned_staging_files(tmp_path, monkeypatch)
     assert not list(tmp_path.glob(".output.epub.*.copying"))
 
 
+def test_publication_staging_resists_symlink_insertion(tmp_path, monkeypatch):
+    temporary = tmp_path / "temporary.epub"
+    output = tmp_path / "output.epub"
+    victim = tmp_path / "victim.txt"
+    victim_data = b"must remain unchanged"
+    make_epub(temporary)
+    victim.write_bytes(victim_data)
+    real_link = archive_module.os.link
+    real_publish = archive_module._publish_staging_no_clobber
+    staging_path = None
+
+    def staging_only_link(source, destination):
+        if not str(source).endswith(".copying"):
+            raise OSError("initial hard links unavailable")
+        real_link(source, destination)
+
+    def attack_staging(staging, destination):
+        nonlocal staging_path
+        staging_path = staging
+        with pytest.raises(OSError):
+            staging.symlink_to(victim)
+        assert staging.is_file()
+        assert not staging.is_symlink()
+        real_publish(staging, destination)
+
+    monkeypatch.setattr(archive_module.os, "link", staging_only_link)
+    monkeypatch.setattr(archive_module, "_publish_staging_no_clobber", attack_staging)
+
+    archive_module.publish_epub(temporary, output, overwrite=False)
+
+    assert victim.read_bytes() == victim_data
+    assert staging_path is not None
+    assert not staging_path.exists()
+    archive_module.validate_output(output)
+
+
 def test_fallback_copy_is_invisible_until_atomic_publish(tmp_path, monkeypatch):
     temporary = tmp_path / "temporary.epub"
     output = tmp_path / "output.epub"
@@ -610,6 +782,7 @@ def test_unsafe_no_clobber_platform_returns_structured_error(tmp_path, monkeypat
     assert "Atomic no-clobber" in result.errors[0].message
     assert not output.exists()
     assert not list(tmp_path.glob(".output.epub.*.copying"))
+    assert not list(tmp_path.glob(".output.epub.*.tmp"))
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows rename semantics only")

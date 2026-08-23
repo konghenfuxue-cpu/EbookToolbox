@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
+from typing import BinaryIO
 from urllib.parse import unquote
 from xml.etree import ElementTree as ET
 
@@ -154,9 +156,11 @@ def safe_extract(epub: Path, target: Path) -> tuple[Path, ...]:
     return tuple(opf_paths)
 
 
-def validate_output(path: Path) -> None:
+def validate_output(path: Path | BinaryIO) -> None:
     """Validate ZIP integrity and minimum EPUB structure in a built output."""
 
+    if hasattr(path, "seek"):
+        path.seek(0)
     with zipfile.ZipFile(path) as archive:
         infos = archive.infolist()
         if not infos or infos[0].filename != "mimetype":
@@ -183,26 +187,54 @@ def validate_output(path: Path) -> None:
             raise ArchiveError("Output container.xml references a missing OPF")
 
 
-def build_epub(root: Path, temporary_output: Path) -> None:
-    """Build and validate an EPUB at *temporary_output*."""
+def build_epub(root: Path, temporary_output: BinaryIO) -> None:
+    """Build an EPUB through an already-open, exclusively created binary file."""
 
-    temporary_output.unlink(missing_ok=True)
+    temporary_output.seek(0)
+    temporary_output.truncate(0)
+    with zipfile.ZipFile(temporary_output, "w", allowZip64=True) as archive:
+        mimetype = root / "mimetype"
+        archive.write(mimetype, "mimetype", compress_type=zipfile.ZIP_STORED)
+        for file in sorted(root.rglob("*")):
+            if file.is_file() and file != mimetype:
+                archive.write(
+                    file,
+                    file.relative_to(root).as_posix(),
+                    compress_type=zipfile.ZIP_DEFLATED,
+                    compresslevel=9,
+                )
+    temporary_output.flush()
+    os.fsync(temporary_output.fileno())
+
+
+def _temporary_path_is_owned(path: Path, identity: os.stat_result) -> bool:
+    """Return whether *path* is still the regular file represented by *identity*."""
+
+    if not stat.S_ISREG(identity.st_mode) or identity.st_ino == 0:
+        return False
     try:
-        with zipfile.ZipFile(temporary_output, "w", allowZip64=True) as archive:
-            mimetype = root / "mimetype"
-            archive.write(mimetype, "mimetype", compress_type=zipfile.ZIP_STORED)
-            for file in sorted(root.rglob("*")):
-                if file.is_file() and file != mimetype:
-                    archive.write(
-                        file,
-                        file.relative_to(root).as_posix(),
-                        compress_type=zipfile.ZIP_DEFLATED,
-                        compresslevel=9,
-                    )
-        validate_output(temporary_output)
-    except Exception:
-        temporary_output.unlink(missing_ok=True)
-        raise
+        current = path.lstat()
+    except OSError:
+        return False
+    return (
+        stat.S_ISREG(current.st_mode)
+        and current.st_ino != 0
+        and os.path.samestat(identity, current)
+    )
+
+
+def ensure_owned_temporary(path: Path, identity: os.stat_result) -> None:
+    """Reject a missing, replaced, non-regular, or unverifiable temporary path."""
+
+    if not _temporary_path_is_owned(path, identity):
+        raise ArchiveError(f"Temporary output ownership was lost: {path}")
+
+
+def unlink_owned_temporary(path: Path, identity: os.stat_result) -> None:
+    """Delete a temporary path only while it remains the file this call created."""
+
+    if _temporary_path_is_owned(path, identity):
+        path.unlink(missing_ok=True)
 
 
 def _publish_staging_no_clobber(staging: Path, output: Path) -> None:
@@ -235,9 +267,17 @@ def _publish_staging_no_clobber(staging: Path, output: Path) -> None:
         ) from rename_error
 
 
-def publish_epub(temporary_output: Path, output: Path, *, overwrite: bool) -> None:
+def publish_epub(
+    temporary_output: Path,
+    output: Path,
+    *,
+    overwrite: bool,
+    temporary_identity: os.stat_result | None = None,
+) -> None:
     """Atomically publish a validated temporary EPUB."""
 
+    if temporary_identity is not None:
+        ensure_owned_temporary(temporary_output, temporary_identity)
     if output.exists() and not overwrite:
         raise FileExistsError(f"Output already exists: {output}")
     if overwrite:
@@ -248,16 +288,23 @@ def publish_epub(temporary_output: Path, output: Path, *, overwrite: bool) -> No
     try:
         os.link(temporary_output, output)
     except OSError:
+        if temporary_identity is not None:
+            ensure_owned_temporary(temporary_output, temporary_identity)
         staging_file = tempfile.NamedTemporaryFile(
             prefix=f".{output.name}.", suffix=".copying", dir=output.parent, delete=False
         )
         staging = Path(staging_file.name)
+        staging_identity = None
         try:
+            staging_identity = os.fstat(staging_file.fileno())
             with staging_file as destination, temporary_output.open("rb") as source:
                 shutil.copyfileobj(source, destination)
                 destination.flush()
                 os.fsync(destination.fileno())
+            ensure_owned_temporary(staging, staging_identity)
             _publish_staging_no_clobber(staging, output)
         finally:
-            staging.unlink(missing_ok=True)
-    temporary_output.unlink()
+            if not staging_file.closed:
+                staging_file.close()
+            if staging_identity is not None:
+                unlink_owned_temporary(staging, staging_identity)

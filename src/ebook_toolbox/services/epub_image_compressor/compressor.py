@@ -6,7 +6,15 @@ import os
 import tempfile
 from pathlib import Path
 
-from .archive import ArchiveError, build_epub, publish_epub, safe_extract
+from .archive import (
+    ArchiveError,
+    build_epub,
+    ensure_owned_temporary,
+    publish_epub,
+    safe_extract,
+    unlink_owned_temporary,
+    validate_output,
+)
 from .covers import find_cover_paths
 from .images import PASSTHROUGH_EXTENSIONS, SUPPORTED_EXTENSIONS, encode_candidate
 from .models import (
@@ -96,14 +104,28 @@ def compress_epub(request: CompressionRequest) -> CompressionResult:
             temporary_file = tempfile.NamedTemporaryFile(
                 prefix=f".{output.name}.", suffix=".tmp", dir=output.parent, delete=False
             )
-            temporary_file.close()
             temporary_output = Path(temporary_file.name)
-            temporary_output.unlink()
+            temporary_identity = None
             try:
-                build_epub(root, temporary_output)
-                publish_epub(temporary_output, output, overwrite=request.overwrite)
+                temporary_identity = os.fstat(temporary_file.fileno())
+                with temporary_file:
+                    ensure_owned_temporary(temporary_output, temporary_identity)
+                    build_epub(root, temporary_file)
+                    ensure_owned_temporary(temporary_output, temporary_identity)
+                    validate_output(temporary_file)
+                    ensure_owned_temporary(temporary_output, temporary_identity)
+                ensure_owned_temporary(temporary_output, temporary_identity)
+                publish_epub(
+                    temporary_output,
+                    output,
+                    overwrite=request.overwrite,
+                    temporary_identity=temporary_identity,
+                )
             finally:
-                temporary_output.unlink(missing_ok=True)
+                if not temporary_file.closed:
+                    temporary_file.close()
+                if temporary_identity is not None:
+                    unlink_owned_temporary(temporary_output, temporary_identity)
         result.output_bytes = output.stat().st_size
         result.success = True
     except (ArchiveError, FileExistsError, OSError, ValueError) as exc:
