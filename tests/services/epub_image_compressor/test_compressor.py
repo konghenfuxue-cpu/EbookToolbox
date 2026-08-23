@@ -16,6 +16,8 @@ from ebook_toolbox.services.epub_image_compressor import (
     ImageStatus,
     compress_epub,
 )
+from ebook_toolbox.services.epub_image_compressor import archive as archive_module
+from ebook_toolbox.services.epub_image_compressor import images as images_module
 
 CONTAINER = b'''<?xml version="1.0"?>
 <container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">
@@ -238,3 +240,91 @@ def test_invalid_container_reports_failure_and_preserves_source(tmp_path):
 
     assert not result.success
     assert hashlib.sha256(source.read_bytes()).hexdigest() == before
+
+
+@pytest.mark.parametrize("size", [(50_001, 1), (10_001, 10_000)])
+def test_unsafe_dimensions_are_rejected_before_load(tmp_path, monkeypatch, size):
+    path = tmp_path / "large.png"
+    path.write_bytes(b"not decoded")
+
+    class HeaderOnlyImage:
+        format = "PNG"
+        n_frames = 1
+
+        def __init__(self):
+            self.size = size
+            self.load_called = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def load(self):
+            self.load_called = True
+            raise AssertionError("pixel data must not be decoded")
+
+    source = HeaderOnlyImage()
+    monkeypatch.setattr(images_module.Image, "open", lambda _path: source)
+
+    encoded = images_module.encode_candidate(path, type(BALANCED)("test", 72, 100, 1))
+
+    assert encoded.result.status is ImageStatus.SKIPPED
+    assert encoded.result.reason == "unsafe_dimensions"
+    assert encoded.result.warnings[0].code == "image_dimensions_exceeded"
+    assert not source.load_called
+
+
+@pytest.mark.parametrize(
+    ("exception", "status"),
+    [
+        (Image.DecompressionBombWarning("warning"), ImageStatus.SKIPPED),
+        (Image.DecompressionBombError("error"), ImageStatus.FAILED),
+    ],
+)
+def test_pillow_decompression_bombs_are_structured(tmp_path, monkeypatch, exception, status):
+    path = tmp_path / "bomb.png"
+    path.write_bytes(b"header")
+
+    def raise_bomb(_path):
+        raise exception
+
+    monkeypatch.setattr(images_module.Image, "open", raise_bomb)
+    encoded = images_module.encode_candidate(path, type(BALANCED)("test", 72, 100, 1))
+
+    assert encoded.result.status is status
+    assert encoded.result.reason == "decompression_bomb"
+    assert encoded.result.warnings or encoded.result.error is not None
+
+
+def test_failed_fallback_copy_is_clean_and_retryable(tmp_path, monkeypatch):
+    source = tmp_path / "source.epub"
+    output = tmp_path / "output.epub"
+    make_epub(source)
+    before = hashlib.sha256(source.read_bytes()).digest()
+    real_copy = archive_module.shutil.copyfileobj
+    fail_copy = True
+
+    monkeypatch.setattr(archive_module.os, "link", lambda *_args: (_ for _ in ()).throw(OSError()))
+
+    def controlled_copy(src, dst, *args):
+        nonlocal fail_copy
+        if fail_copy and str(getattr(dst, "name", "")).endswith(".copying"):
+            dst.write(src.read(8))
+            fail_copy = False
+            raise OSError("simulated full disk")
+        real_copy(src, dst, *args)
+
+    monkeypatch.setattr(archive_module.shutil, "copyfileobj", controlled_copy)
+
+    failed = compress_epub(CompressionRequest(source, output=output))
+    assert not failed.success
+    assert not output.exists()
+    assert not list(tmp_path.glob(".output.epub.*.copying"))
+    assert hashlib.sha256(source.read_bytes()).digest() == before
+
+    retried = compress_epub(CompressionRequest(source, output=output))
+    assert retried.success
+    assert output.is_file()
+    assert hashlib.sha256(source.read_bytes()).digest() == before

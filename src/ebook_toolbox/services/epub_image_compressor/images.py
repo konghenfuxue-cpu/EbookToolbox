@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,6 +23,11 @@ SUPPORTED_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".webp"})
 PASSTHROUGH_EXTENSIONS = frozenset({".gif"})
 _EXPECTED_FORMATS = {".jpg": "JPEG", ".jpeg": "JPEG", ".png": "PNG", ".webp": "WEBP"}
 
+# Large comic pages and scrolling screenshots are legitimate, so the edge limit is
+# deliberately generous while the pixel limit still bounds decoded memory.
+MAX_IMAGE_EDGE = 50_000
+MAX_IMAGE_PIXELS = 100_000_000
+
 
 @dataclass(frozen=True, slots=True)
 class EncodedImage:
@@ -34,6 +40,8 @@ def _resized(image: Image.Image, max_long_edge: int) -> Image.Image:
     if long_edge <= max_long_edge:
         return image
     scale = max_long_edge / long_edge
+    if image.mode in {"1", "P"}:
+        image = image.convert("RGBA" if "transparency" in image.info else "RGB")
     return image.resize(
         (max(1, round(image.width * scale)), max(1, round(image.height * scale))),
         Image.Resampling.LANCZOS,
@@ -62,7 +70,10 @@ def encode_candidate(
         )
 
     try:
-        with Image.open(path) as source:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            source = Image.open(path)
+        with source:
             expected = _EXPECTED_FORMATS.get(path.suffix.lower())
             if source.format != expected:
                 warning = CompressionWarning(
@@ -94,6 +105,28 @@ def encode_candidate(
                         warnings=(warning,),
                     ),
                 )
+            width, height = source.size
+            if (
+                width > MAX_IMAGE_EDGE
+                or height > MAX_IMAGE_EDGE
+                or width * height > MAX_IMAGE_PIXELS
+            ):
+                warning = CompressionWarning(
+                    "image_dimensions_exceeded",
+                    f"Image dimensions {width}x{height} exceed safe decoding limits.",
+                    shown_path,
+                )
+                return EncodedImage(
+                    None,
+                    ImageResult(
+                        shown_path,
+                        ImageStatus.SKIPPED,
+                        old_size,
+                        original_size=(width, height),
+                        reason="unsafe_dimensions",
+                        warnings=(warning,),
+                    ),
+                )
             source.load()
             image = ImageOps.exif_transpose(source)
             original_dimensions = image.size
@@ -115,6 +148,30 @@ def encode_candidate(
                 image.save(output, "PNG", optimize=True, compress_level=9)
             else:
                 image.save(output, "WEBP", quality=profile.quality, method=6)
+    except Image.DecompressionBombWarning as exc:
+        warning = CompressionWarning("decompression_bomb", str(exc), shown_path)
+        return EncodedImage(
+            None,
+            ImageResult(
+                shown_path,
+                ImageStatus.SKIPPED,
+                old_size,
+                reason="decompression_bomb",
+                warnings=(warning,),
+            ),
+        )
+    except Image.DecompressionBombError as exc:
+        error = CompressionError("decompression_bomb", str(exc), shown_path)
+        return EncodedImage(
+            None,
+            ImageResult(
+                shown_path,
+                ImageStatus.FAILED,
+                old_size,
+                reason="decompression_bomb",
+                error=error,
+            ),
+        )
     except Exception as exc:
         error = CompressionError("image_processing_failed", str(exc), shown_path)
         return EncodedImage(

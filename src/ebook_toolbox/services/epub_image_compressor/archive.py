@@ -11,6 +11,18 @@ from xml.etree import ElementTree as ET
 
 MIMETYPE_CONTENT = b"application/epub+zip"
 CONTAINER_PATH = Path("META-INF/container.xml")
+MAX_ARCHIVE_MEMBERS = 10_000
+MAX_MEMBER_SIZE = 256 * 1024 * 1024
+MAX_TOTAL_SIZE = 2 * 1024 * 1024 * 1024
+MAX_TOTAL_COMPRESSED_SIZE = 1024 * 1024 * 1024
+MAX_COMPRESSION_RATIO = 1_000
+MAX_TOTAL_COMPRESSION_RATIO = 200
+
+_WINDOWS_ILLEGAL = frozenset('<>:"|?*')
+_WINDOWS_RESERVED = {
+    "con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)),
+    *(f"lpt{i}" for i in range(1, 10)),
+}
 
 
 class ArchiveError(ValueError):
@@ -28,15 +40,80 @@ def _safe_destination(root: Path, name: str) -> Path:
     return destination
 
 
+def _validate_archive_metadata(infos: list[zipfile.ZipInfo]) -> None:
+    if len(infos) > MAX_ARCHIVE_MEMBERS:
+        raise ArchiveError("ZIP contains too many members")
+    total_size = sum(info.file_size for info in infos)
+    total_compressed = sum(info.compress_size for info in infos)
+    if total_size > MAX_TOTAL_SIZE:
+        raise ArchiveError("ZIP total uncompressed size exceeds the limit")
+    if total_compressed > MAX_TOTAL_COMPRESSED_SIZE:
+        raise ArchiveError("ZIP total compressed size exceeds the limit")
+    for info in infos:
+        if info.file_size > MAX_MEMBER_SIZE:
+            raise ArchiveError(f"ZIP member is too large: {info.filename}")
+        if info.file_size and (
+            info.compress_size == 0 or info.file_size / info.compress_size > MAX_COMPRESSION_RATIO
+        ):
+            raise ArchiveError(f"ZIP member compression ratio is unsafe: {info.filename}")
+    if total_size and (
+        total_compressed == 0 or total_size / total_compressed > MAX_TOTAL_COMPRESSION_RATIO
+    ):
+        raise ArchiveError("ZIP aggregate compression ratio is unsafe")
+
+
+def _windows_parts(name: str) -> tuple[str, ...]:
+    normalized = name.replace("\\", "/")
+    parts = normalized.split("/")
+    is_directory = normalized.endswith("/")
+    path_parts = parts[:-1] if is_directory else parts
+    if (
+        not normalized
+        or normalized.startswith("/")
+        or any(part in {"", ".", ".."} for part in path_parts)
+    ):
+        raise ArchiveError(f"Unsafe ZIP member path: {name}")
+    result: list[str] = []
+    for part in path_parts:
+        has_illegal_character = any(
+            ord(char) < 32 or char in _WINDOWS_ILLEGAL for char in part
+        )
+        if part != part.rstrip(" .") or has_illegal_character:
+            raise ArchiveError(f"ZIP member is not safely representable on Windows: {name}")
+        base = part.split(".", 1)[0].casefold()
+        if base in _WINDOWS_RESERVED:
+            raise ArchiveError(f"ZIP member uses a reserved Windows name: {name}")
+        result.append(part.casefold())
+    return tuple(result)
+
+
+def _validate_member_paths(infos: list[zipfile.ZipInfo], target: Path) -> None:
+    entries: dict[tuple[str, ...], bool] = {}
+    for info in infos:
+        _safe_destination(target, info.filename)
+        parts = _windows_parts(info.filename)
+        is_directory = info.is_dir() or info.filename.endswith(("/", "\\"))
+        if parts in entries:
+            raise ArchiveError(f"ZIP member path collision: {info.filename}")
+        for index in range(1, len(parts)):
+            if entries.get(parts[:index]) is False:
+                raise ArchiveError(f"ZIP file/directory path conflict: {info.filename}")
+        if not is_directory and any(key[: len(parts)] == parts for key in entries):
+            raise ArchiveError(f"ZIP file/directory path conflict: {info.filename}")
+        entries[parts] = is_directory
+
+
 def safe_extract(epub: Path, target: Path) -> tuple[Path, ...]:
     """Validate and extract an EPUB, returning its OPF paths."""
 
     try:
         with zipfile.ZipFile(epub) as archive:
+            infos = archive.infolist()
+            _validate_archive_metadata(infos)
+            _validate_member_paths(infos, target)
             bad_member = archive.testzip()
             if bad_member is not None:
                 raise ArchiveError(f"Corrupt ZIP member: {bad_member}")
-            infos = archive.infolist()
             names = [info.filename for info in infos]
             if len(names) != len(set(names)):
                 raise ArchiveError("Duplicate ZIP member names are not supported")
@@ -134,10 +211,31 @@ def publish_epub(temporary_output: Path, output: Path, *, overwrite: bool) -> No
     if overwrite:
         os.replace(temporary_output, output)
         return
-    # A hard link provides atomic create-if-absent semantics; fall back to exclusive copy.
+    # A hard link provides atomic create-if-absent semantics. If it is unavailable,
+    # copy to a sibling staging file first and only then attempt exclusive publication.
     try:
         os.link(temporary_output, output)
     except OSError:
-        with temporary_output.open("rb") as source, output.open("xb") as destination:
-            shutil.copyfileobj(source, destination)
+        staging = output.with_name(f".{output.name}.{os.getpid()}.copying")
+        staging.unlink(missing_ok=True)
+        try:
+            with temporary_output.open("rb") as source, staging.open("xb") as destination:
+                shutil.copyfileobj(source, destination)
+                destination.flush()
+                os.fsync(destination.fileno())
+            try:
+                os.link(staging, output)
+            except OSError:
+                # Last-resort exclusive copy retains no-clobber semantics. Always
+                # remove a partially created destination if the copy fails.
+                try:
+                    with staging.open("rb") as source, output.open("xb") as destination:
+                        shutil.copyfileobj(source, destination)
+                        destination.flush()
+                        os.fsync(destination.fileno())
+                except Exception:
+                    output.unlink(missing_ok=True)
+                    raise
+        finally:
+            staging.unlink(missing_ok=True)
     temporary_output.unlink()
