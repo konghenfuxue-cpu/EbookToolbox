@@ -5,6 +5,7 @@ description = "A maintainable PySide6 desktop toolbox for ebook workflows"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "pillow>=12.1.1",
     "pyside6>=6.11.1",
     "qt-material>=2.17",
 ]
@@ -22,6 +23,7 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 
 [tool.ruff]
+exclude = ["migration_sources"]
 line-length = 100
 src = ["src", "tests"]
 
