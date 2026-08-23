@@ -227,14 +227,20 @@ def publish_epub(temporary_output: Path, output: Path, *, overwrite: bool) -> No
                 os.link(staging, output)
             except OSError:
                 # Last-resort exclusive copy retains no-clobber semantics. Always
-                # remove a partially created destination if the copy fails.
+                # remove a partially created destination if the copy fails, but
+                # never remove a file created concurrently by another publisher.
+                output_created = False
                 try:
-                    with staging.open("rb") as source, output.open("xb") as destination:
-                        shutil.copyfileobj(source, destination)
-                        destination.flush()
-                        os.fsync(destination.fileno())
+                    with staging.open("rb") as source:
+                        destination = output.open("xb")
+                        output_created = True
+                        with destination:
+                            shutil.copyfileobj(source, destination)
+                            destination.flush()
+                            os.fsync(destination.fileno())
                 except Exception:
-                    output.unlink(missing_ok=True)
+                    if output_created:
+                        output.unlink(missing_ok=True)
                     raise
         finally:
             staging.unlink(missing_ok=True)

@@ -2,12 +2,23 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from urllib.parse import unquote
 from xml.etree import ElementTree as ET
 
 from .images import SUPPORTED_EXTENSIONS
 from .models import CompressionWarning
+
+
+def _has_cover_filename(stem: str) -> bool:
+    """Return whether *stem* uses a conventional, explicit cover marker."""
+
+    normalized = stem.casefold()
+    if normalized in {"cover", "frontcover", "封面"}:
+        return True
+    tokens = {token for token in re.split(r"[^0-9a-z]+", normalized) if token}
+    return "cover" in tokens
 
 
 def find_cover_paths(
@@ -44,6 +55,6 @@ def find_cover_paths(
 
     for image in root.rglob("*"):
         if image.is_file() and image.suffix.lower() in SUPPORTED_EXTENSIONS:
-            if any(marker in image.stem.lower() for marker in ("cover", "frontcover", "封面")):
+            if _has_cover_filename(image.stem):
                 covers.add(image.resolve())
     return covers, warnings

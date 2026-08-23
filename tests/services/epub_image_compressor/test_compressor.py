@@ -163,6 +163,41 @@ def test_cover_policy(tmp_path, include_cover, expected):
         assert read_member(result.output, "OEBPS/art.jpg") == original
 
 
+@pytest.mark.parametrize(
+    "name", ["cover.jpg", "front-cover.png", "front_cover.webp", "cover-image.jpg", "封面.png"]
+)
+@pytest.mark.parametrize("include_cover", [False, True])
+def test_conventional_cover_filenames_follow_cover_policy(tmp_path, name, include_cover):
+    source = tmp_path / f"book-{Path(name).suffix[1:]}.epub"
+    image_format = (
+        "PNG" if name.endswith(".png") else "WEBP" if name.endswith(".webp") else "JPEG"
+    )
+    make_epub(source, {name: image_bytes(image_format)})
+
+    profile = type(BALANCED)("test", 20, 400, 1)
+    result = compress_epub(
+        CompressionRequest(source, profile=profile, include_cover=include_cover)
+    )
+
+    assert result.success
+    assert result.images[0].reason == (None if include_cover else "cover")
+    if include_cover:
+        assert result.images[0].status is ImageStatus.REPLACED
+
+
+@pytest.mark.parametrize("name", ["discover.jpg", "recovered.png", "discoveries.jpg"])
+def test_cover_substrings_in_ordinary_filenames_are_compressed(tmp_path, name):
+    source = tmp_path / f"book-{Path(name).stem}.epub"
+    make_epub(source, {name: image_bytes("PNG" if name.endswith(".png") else "JPEG")})
+    profile = type(BALANCED)("test", 20, 400, 1)
+
+    result = compress_epub(CompressionRequest(source, profile=profile))
+
+    assert result.success
+    assert result.images[0].reason is None
+    assert result.images[0].status is ImageStatus.REPLACED
+
+
 def test_chinese_and_space_paths(tmp_path):
     directory = tmp_path / "中文 目录"
     directory.mkdir()
@@ -306,7 +341,9 @@ def test_failed_fallback_copy_is_clean_and_retryable(tmp_path, monkeypatch):
     real_copy = archive_module.shutil.copyfileobj
     fail_copy = True
 
-    monkeypatch.setattr(archive_module.os, "link", lambda *_args: (_ for _ in ()).throw(OSError()))
+    monkeypatch.setattr(
+        archive_module.os, "link", lambda *_args: (_ for _ in ()).throw(OSError())
+    )
 
     def controlled_copy(src, dst, *args):
         nonlocal fail_copy
@@ -328,3 +365,49 @@ def test_failed_fallback_copy_is_clean_and_retryable(tmp_path, monkeypatch):
     assert retried.success
     assert output.is_file()
     assert hashlib.sha256(source.read_bytes()).digest() == before
+
+
+def test_concurrent_output_is_preserved_when_exclusive_open_fails(tmp_path, monkeypatch):
+    temporary = tmp_path / "temporary.epub"
+    output = tmp_path / "output.epub"
+    temporary.write_bytes(b"new output")
+    concurrent_data = b"concurrent output"
+
+    monkeypatch.setattr(
+        archive_module.os, "link", lambda *_args: (_ for _ in ()).throw(OSError())
+    )
+    real_open = Path.open
+
+    def concurrent_open(path, mode="r", *args, **kwargs):
+        if path == output and mode == "xb":
+            output.write_bytes(concurrent_data)
+        return real_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", concurrent_open)
+
+    with pytest.raises(FileExistsError):
+        archive_module.publish_epub(temporary, output, overwrite=False)
+
+    assert output.read_bytes() == concurrent_data
+
+
+def test_exclusive_copy_failure_removes_its_partial_output(tmp_path, monkeypatch):
+    temporary = tmp_path / "temporary.epub"
+    output = tmp_path / "output.epub"
+    temporary.write_bytes(b"new output")
+
+    monkeypatch.setattr(archive_module.os, "link", lambda *_args: (_ for _ in ()).throw(OSError()))
+    real_copy = archive_module.shutil.copyfileobj
+
+    def fail_final_copy(source, destination, *args):
+        if Path(destination.name) == output:
+            destination.write(source.read(2))
+            raise OSError("simulated copy failure")
+        real_copy(source, destination, *args)
+
+    monkeypatch.setattr(archive_module.shutil, "copyfileobj", fail_final_copy)
+
+    with pytest.raises(OSError, match="simulated copy failure"):
+        archive_module.publish_epub(temporary, output, overwrite=False)
+
+    assert not output.exists()
