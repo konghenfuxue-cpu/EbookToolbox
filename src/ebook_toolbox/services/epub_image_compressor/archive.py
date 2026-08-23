@@ -66,6 +66,12 @@ def _validate_archive_metadata(infos: list[zipfile.ZipInfo]) -> None:
         raise ArchiveError("ZIP aggregate compression ratio is unsafe")
 
 
+def validate_archive_limits(infos: list[zipfile.ZipInfo]) -> None:
+    """Reject archives whose member sizes or compression ratios exceed safe limits."""
+
+    _validate_archive_metadata(infos)
+
+
 def _windows_parts(name: str) -> tuple[str, ...]:
     normalized = name.replace("\\", "/")
     parts = normalized.split("/")
@@ -113,7 +119,7 @@ def safe_extract(epub: Path, target: Path) -> tuple[Path, ...]:
     try:
         with zipfile.ZipFile(epub) as archive:
             infos = archive.infolist()
-            _validate_archive_metadata(infos)
+            validate_archive_limits(infos)
             _validate_member_paths(infos, target)
             bad_member = archive.testzip()
             if bad_member is not None:

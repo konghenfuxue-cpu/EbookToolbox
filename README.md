@@ -126,3 +126,30 @@ else:
 
 `replace_existing=False` 可保留已有且目标有效的格式主目录。目录修复 core 已接入
 “EPUB 目录修复”页面，并通过后台线程池执行；当前尚未提供 CLI 或批处理。
+
+## EPUB 综合结构修复 core（第一版）
+
+仓库现已提供不依赖 PySide6 的 EPUB 综合结构修复服务，位于
+`src/ebook_toolbox/services/epub_structural_repair/`。它包含单本修复和顺序批量调度 API，
+可修复 Windows 无法表达的内部路径及其已知引用、OPF manifest/spine 悬空项和缺失的
+`dc:language`。调用者显式提供参考 EPUB 时，还可按完全一致的 manifest 路径补回缺失
+资源。默认生成 `<原文件名>_repaired.epub`，不会覆盖源文件或已有输出。
+
+```python
+from pathlib import Path
+
+from ebook_toolbox.services.epub_structural_repair import (
+    BatchRepairRequest,
+    RepairRequest,
+    repair_epub_batch,
+    repair_epub_structure,
+)
+
+single = repair_epub_structure(RepairRequest(source=Path("book.epub")))
+batch = repair_epub_batch(
+    BatchRepairRequest(inputs=(Path("library"),), recursive=True)
+)
+```
+
+本轮仅提供纯 Python core 和自动化测试，尚未接入 GUI。该服务不执行图片压缩、广告
+清理、章节改名或目录重建；图片优化和目录修复仍由各自的独立服务负责。
