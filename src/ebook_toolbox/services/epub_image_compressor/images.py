@@ -127,6 +127,13 @@ def encode_candidate(
                         warnings=(warning,),
                     ),
                 )
+            raw_icc_profile = source.info.get("icc_profile")
+            icc_profile = (
+                bytes(raw_icc_profile)
+                if source.format == "JPEG"
+                and isinstance(raw_icc_profile, (bytes, bytearray, memoryview))
+                else None
+            )
             source.load()
             image = ImageOps.exif_transpose(source)
             original_dimensions = image.size
@@ -143,6 +150,7 @@ def encode_candidate(
                     optimize=True,
                     progressive=True,
                     subsampling=0 if profile.quality >= 80 else 2,
+                    **({"icc_profile": icc_profile} if icc_profile is not None else {}),
                 )
             elif extension == ".png":
                 image.save(output, "PNG", optimize=True, compress_level=9)

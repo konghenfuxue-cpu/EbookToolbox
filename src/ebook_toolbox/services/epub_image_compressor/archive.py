@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import tempfile
+import threading
 import zipfile
 from pathlib import Path, PurePosixPath
 from urllib.parse import unquote
@@ -24,6 +26,7 @@ _WINDOWS_RESERVED = {
     "con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)),
     *(f"lpt{i}" for i in range(1, 10)),
 }
+_PUBLICATION_ENTRY_LOCK = threading.Lock()
 
 
 class ArchiveError(ValueError):
@@ -204,13 +207,32 @@ def build_epub(root: Path, temporary_output: Path) -> None:
         raise
 
 
+def _unlink_if_same_file(output: Path, created_identity: os.stat_result) -> None:
+    """Remove *output* only while it is still the regular file this call created."""
+
+    with _PUBLICATION_ENTRY_LOCK:
+        try:
+            current_identity = output.lstat()
+        except OSError:
+            return
+        if not stat.S_ISREG(current_identity.st_mode):
+            return
+        # A zero inode is not a reliable file identifier on every platform. Fail
+        # closed rather than risk deleting a replacement when identity is unavailable.
+        if created_identity.st_ino == 0 or current_identity.st_ino == 0:
+            return
+        if os.path.samestat(created_identity, current_identity):
+            output.unlink(missing_ok=True)
+
+
 def publish_epub(temporary_output: Path, output: Path, *, overwrite: bool) -> None:
     """Atomically publish a validated temporary EPUB."""
 
     if output.exists() and not overwrite:
         raise FileExistsError(f"Output already exists: {output}")
     if overwrite:
-        os.replace(temporary_output, output)
+        with _PUBLICATION_ENTRY_LOCK:
+            os.replace(temporary_output, output)
         return
     # A hard link provides atomic create-if-absent semantics. If it is unavailable,
     # copy to a sibling staging file first and only then attempt exclusive publication.
@@ -232,18 +254,18 @@ def publish_epub(temporary_output: Path, output: Path, *, overwrite: bool) -> No
                 # Last-resort exclusive copy retains no-clobber semantics. Always
                 # remove a partially created destination if the copy fails, but
                 # never remove a file created concurrently by another publisher.
-                output_created = False
+                created_identity = None
                 try:
                     with staging.open("rb") as source:
                         destination = output.open("xb")
-                        output_created = True
                         with destination:
+                            created_identity = os.fstat(destination.fileno())
                             shutil.copyfileobj(source, destination)
                             destination.flush()
                             os.fsync(destination.fileno())
                 except Exception:
-                    if output_created:
-                        output.unlink(missing_ok=True)
+                    if created_identity is not None:
+                        _unlink_if_same_file(output, created_identity)
                     raise
         finally:
             staging.unlink(missing_ok=True)

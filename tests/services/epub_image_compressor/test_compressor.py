@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 import threading
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageCms
 
 from ebook_toolbox.services.epub_image_compressor import (
     BALANCED,
@@ -103,6 +104,23 @@ def test_jpeg_is_resized(tmp_path):
     assert result.images[0].status is ImageStatus.REPLACED
     with Image.open(io.BytesIO(read_member(result.output, "OEBPS/page.jpg"))) as image:
         assert max(image.size) == 800
+
+
+def test_jpeg_preserves_icc_profile_when_reencoded(tmp_path):
+    source = tmp_path / "profiled.epub"
+    icc_profile = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+    image = Image.effect_noise((1800, 3600), 80).convert("RGB")
+    encoded = io.BytesIO()
+    image.save(encoded, "JPEG", quality=98, icc_profile=icc_profile)
+    make_epub(source, {"page.jpg": encoded.getvalue()})
+    profile = type(BALANCED)("test", 30, 800, 1)
+
+    result = compress_epub(CompressionRequest(source, profile=profile))
+
+    assert result.success
+    assert result.images[0].status is ImageStatus.REPLACED
+    with Image.open(io.BytesIO(read_member(result.output, "OEBPS/page.jpg"))) as output:
+        assert output.info["icc_profile"] == icc_profile
 
 
 def test_transparent_png_keeps_alpha(tmp_path):
@@ -446,6 +464,79 @@ def test_exclusive_copy_failure_removes_its_partial_output(tmp_path, monkeypatch
         archive_module.publish_epub(temporary, output, overwrite=False)
 
     assert not output.exists()
+
+
+def test_partial_cleanup_fails_closed_when_lstat_fails(tmp_path, monkeypatch):
+    output = tmp_path / "output.epub"
+    output.write_bytes(b"partial output")
+    created_identity = output.stat()
+
+    def fail_lstat(_path):
+        raise OSError("simulated stat failure")
+
+    monkeypatch.setattr(Path, "lstat", fail_lstat)
+
+    archive_module._unlink_if_same_file(output, created_identity)
+
+    assert output.read_bytes() == b"partial output"
+
+
+def test_partial_cleanup_fails_closed_for_symlink_identity(tmp_path, monkeypatch):
+    output = tmp_path / "output.epub"
+    output.write_bytes(b"replacement output")
+    created_identity = output.stat()
+    symlink_identity = os.stat_result(
+        (archive_module.stat.S_IFLNK, *tuple(output.lstat())[1:])
+    )
+    monkeypatch.setattr(Path, "lstat", lambda _path: symlink_identity)
+
+    archive_module._unlink_if_same_file(output, created_identity)
+
+    assert output.read_bytes() == b"replacement output"
+
+
+def test_failed_copy_does_not_remove_concurrent_overwrite(tmp_path, monkeypatch):
+    temporary = tmp_path / "temporary.epub"
+    replacement = tmp_path / "replacement.epub"
+    output = tmp_path / "output.epub"
+    temporary.write_bytes(b"failing output")
+    replacement_data = b"replacement output"
+    replacement.write_bytes(replacement_data)
+
+    monkeypatch.setattr(
+        archive_module.os, "link", lambda *_args: (_ for _ in ()).throw(OSError())
+    )
+    real_copy = archive_module.shutil.copyfileobj
+    real_cleanup = archive_module._unlink_if_same_file
+    publish_replacement = threading.Event()
+    replacement_done = threading.Event()
+
+    def fail_final_copy(source, destination, *args):
+        if Path(destination.name) == output:
+            destination.write(source.read(2))
+            raise OSError("simulated copy failure")
+        real_copy(source, destination, *args)
+
+    def replace_output():
+        assert publish_replacement.wait(timeout=5)
+        archive_module.publish_epub(replacement, output, overwrite=True)
+        replacement_done.set()
+
+    def cleanup_after_replacement(path, created_identity):
+        publish_replacement.set()
+        assert replacement_done.wait(timeout=5)
+        real_cleanup(path, created_identity)
+
+    monkeypatch.setattr(archive_module.shutil, "copyfileobj", fail_final_copy)
+    monkeypatch.setattr(archive_module, "_unlink_if_same_file", cleanup_after_replacement)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        publisher = executor.submit(replace_output)
+        with pytest.raises(OSError, match="simulated copy failure"):
+            archive_module.publish_epub(temporary, output, overwrite=False)
+        publisher.result(timeout=5)
+
+    assert output.read_bytes() == replacement_data
 
 
 def test_overwrite_replaces_output_symlink_without_touching_target(tmp_path):
