@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
-import stat
 import tempfile
-import threading
 import zipfile
 from pathlib import Path, PurePosixPath
 from urllib.parse import unquote
@@ -20,13 +18,13 @@ MAX_TOTAL_SIZE = 2 * 1024 * 1024 * 1024
 MAX_TOTAL_COMPRESSED_SIZE = 1024 * 1024 * 1024
 MAX_COMPRESSION_RATIO = 1_000
 MAX_TOTAL_COMPRESSION_RATIO = 200
+_IS_WINDOWS = os.name == "nt"
 
 _WINDOWS_ILLEGAL = frozenset('<>:"|?*')
 _WINDOWS_RESERVED = {
     "con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)),
     *(f"lpt{i}" for i in range(1, 10)),
 }
-_PUBLICATION_ENTRY_LOCK = threading.Lock()
 
 
 class ArchiveError(ValueError):
@@ -207,22 +205,34 @@ def build_epub(root: Path, temporary_output: Path) -> None:
         raise
 
 
-def _unlink_if_same_file(output: Path, created_identity: os.stat_result) -> None:
-    """Remove *output* only while it is still the regular file this call created."""
+def _publish_staging_no_clobber(staging: Path, output: Path) -> None:
+    """Atomically publish a complete sibling staging file without overwriting."""
 
-    with _PUBLICATION_ENTRY_LOCK:
-        try:
-            current_identity = output.lstat()
-        except OSError:
-            return
-        if not stat.S_ISREG(current_identity.st_mode):
-            return
-        # A zero inode is not a reliable file identifier on every platform. Fail
-        # closed rather than risk deleting a replacement when identity is unavailable.
-        if created_identity.st_ino == 0 or current_identity.st_ino == 0:
-            return
-        if os.path.samestat(created_identity, current_identity):
-            output.unlink(missing_ok=True)
+    try:
+        os.link(staging, output)
+        return
+    except FileExistsError:
+        raise
+    except OSError as link_error:
+        if os.path.lexists(output):
+            raise FileExistsError(f"Output already exists: {output}") from link_error
+        if not _IS_WINDOWS:
+            raise ArchiveError(
+                "Atomic no-clobber publication is unavailable on this filesystem"
+            ) from link_error
+
+    # Windows rename is an atomic directory-entry operation and fails rather than
+    # replacing an existing destination. Unlike os.replace, it preserves no-clobber.
+    try:
+        os.rename(staging, output)
+    except FileExistsError:
+        raise
+    except OSError as rename_error:
+        if os.path.lexists(output):
+            raise FileExistsError(f"Output already exists: {output}") from rename_error
+        raise ArchiveError(
+            "Atomic no-clobber publication is unavailable on this filesystem"
+        ) from rename_error
 
 
 def publish_epub(temporary_output: Path, output: Path, *, overwrite: bool) -> None:
@@ -231,8 +241,7 @@ def publish_epub(temporary_output: Path, output: Path, *, overwrite: bool) -> No
     if output.exists() and not overwrite:
         raise FileExistsError(f"Output already exists: {output}")
     if overwrite:
-        with _PUBLICATION_ENTRY_LOCK:
-            os.replace(temporary_output, output)
+        os.replace(temporary_output, output)
         return
     # A hard link provides atomic create-if-absent semantics. If it is unavailable,
     # copy to a sibling staging file first and only then attempt exclusive publication.
@@ -248,25 +257,7 @@ def publish_epub(temporary_output: Path, output: Path, *, overwrite: bool) -> No
                 shutil.copyfileobj(source, destination)
                 destination.flush()
                 os.fsync(destination.fileno())
-            try:
-                os.link(staging, output)
-            except OSError:
-                # Last-resort exclusive copy retains no-clobber semantics. Always
-                # remove a partially created destination if the copy fails, but
-                # never remove a file created concurrently by another publisher.
-                created_identity = None
-                try:
-                    with staging.open("rb") as source:
-                        destination = output.open("xb")
-                        with destination:
-                            created_identity = os.fstat(destination.fileno())
-                            shutil.copyfileobj(source, destination)
-                            destination.flush()
-                            os.fsync(destination.fileno())
-                except Exception:
-                    if created_identity is not None:
-                        _unlink_if_same_file(output, created_identity)
-                    raise
+            _publish_staging_no_clobber(staging, output)
         finally:
             staging.unlink(missing_ok=True)
     temporary_output.unlink()

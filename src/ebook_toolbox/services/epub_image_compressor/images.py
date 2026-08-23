@@ -7,7 +7,7 @@ import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
-from PIL import Image, ImageOps
+from PIL import Image, ImageCms, ImageOps
 
 from .models import (
     MINIMUM_REDUCTION_RATIO,
@@ -27,6 +27,14 @@ _EXPECTED_FORMATS = {".jpg": "JPEG", ".jpeg": "JPEG", ".png": "PNG", ".webp": "W
 # deliberately generous while the pixel limit still bounds decoded memory.
 MAX_IMAGE_EDGE = 50_000
 MAX_IMAGE_PIXELS = 100_000_000
+_SRGB_PROFILE = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB"))
+_SRGB_PROFILE_BYTES = _SRGB_PROFILE.tobytes()
+_PROFILE_MODES = {
+    "RGB": frozenset({"P", "PA", "RGB", "RGBA", "RGBX"}),
+    "GRAY": frozenset({"1", "L", "LA"}),
+    "CMYK": frozenset({"CMYK"}),
+    "LAB": frozenset({"LAB"}),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +64,63 @@ def _flatten_for_jpeg(image: Image.Image) -> Image.Image:
     return image.convert("RGB")
 
 
+def _icc_warning(code: str, message: str, path: Path) -> CompressionWarning:
+    return CompressionWarning(code, message, path)
+
+
+def _prepare_profiled_image(
+    image: Image.Image,
+    original_mode: str,
+    raw_icc_profile: object,
+    output_format: str,
+    path: Path,
+) -> tuple[Image.Image, bytes | None, CompressionWarning | None]:
+    """Keep compatible ICC data or convert profiled pixels safely to sRGB."""
+
+    if raw_icc_profile is None:
+        return image, None, None
+    if not isinstance(raw_icc_profile, (bytes, bytearray, memoryview)):
+        return image, None, _icc_warning(
+            "icc_profile_invalid", "The embedded ICC profile is not valid binary data.", path
+        )
+    icc_profile = bytes(raw_icc_profile)
+    try:
+        source_profile = ImageCms.ImageCmsProfile(io.BytesIO(icc_profile))
+        color_space = str(source_profile.profile.xcolor_space).strip()
+    except Exception as exc:
+        return image, None, _icc_warning(
+            "icc_profile_invalid", f"The embedded ICC profile could not be parsed: {exc}", path
+        )
+
+    compatible_modes = _PROFILE_MODES.get(color_space, frozenset())
+    if original_mode not in compatible_modes or image.mode not in compatible_modes:
+        return image, None, _icc_warning(
+            "icc_profile_incompatible",
+            f"ICC color space {color_space!r} is incompatible with image modes "
+            f"{original_mode!r} -> {image.mode!r}.",
+            path,
+        )
+
+    if output_format not in {"JPEG", "WEBP"} or color_space == "RGB":
+        return image, icc_profile, None
+
+    alpha = image.getchannel("A") if "A" in image.getbands() else None
+    color_image = image.getchannel("L") if image.mode == "LA" else image
+    try:
+        converted = ImageCms.profileToProfile(
+            color_image, source_profile, _SRGB_PROFILE, outputMode="RGB"
+        )
+    except Exception as exc:
+        return image, None, _icc_warning(
+            "icc_profile_conversion_failed",
+            f"The embedded ICC profile could not be safely converted to sRGB: {exc}",
+            path,
+        )
+    if alpha is not None:
+        converted.putalpha(alpha)
+    return converted, _SRGB_PROFILE_BYTES, None
+
+
 def encode_candidate(
     path: Path, profile: Profile, *, display_path: Path | None = None
 ) -> EncodedImage:
@@ -74,7 +139,8 @@ def encode_candidate(
             warnings.simplefilter("error", Image.DecompressionBombWarning)
             source = Image.open(path)
         with source:
-            expected = _EXPECTED_FORMATS.get(path.suffix.lower())
+            extension = path.suffix.lower()
+            expected = _EXPECTED_FORMATS.get(extension)
             if source.format != expected:
                 warning = CompressionWarning(
                     "format_mismatch",
@@ -127,20 +193,35 @@ def encode_candidate(
                         warnings=(warning,),
                     ),
                 )
+            original_mode = source.mode
             raw_icc_profile = source.info.get("icc_profile")
-            icc_profile = (
-                bytes(raw_icc_profile)
-                if source.format == "JPEG"
-                and isinstance(raw_icc_profile, (bytes, bytearray, memoryview))
-                else None
-            )
             source.load()
             image = ImageOps.exif_transpose(source)
             original_dimensions = image.size
+            raw_exif = image.info.get("exif")
+            exif = (
+                bytes(raw_exif)
+                if isinstance(raw_exif, (bytes, bytearray, memoryview))
+                else None
+            )
             image = _resized(image, profile.max_long_edge)
+            image, icc_profile, icc_warning = _prepare_profiled_image(
+                image, original_mode, raw_icc_profile, expected, shown_path
+            )
+            if icc_warning is not None:
+                return EncodedImage(
+                    None,
+                    ImageResult(
+                        shown_path,
+                        ImageStatus.SKIPPED,
+                        old_size,
+                        original_size=original_dimensions,
+                        reason=icc_warning.code,
+                        warnings=(icc_warning,),
+                    ),
+                )
             output_dimensions = image.size
             output = io.BytesIO()
-            extension = path.suffix.lower()
             if extension in {".jpg", ".jpeg"}:
                 image = _flatten_for_jpeg(image)
                 image.save(
@@ -151,11 +232,26 @@ def encode_candidate(
                     progressive=True,
                     subsampling=0 if profile.quality >= 80 else 2,
                     **({"icc_profile": icc_profile} if icc_profile is not None else {}),
+                    **({"exif": exif} if exif is not None else {}),
                 )
             elif extension == ".png":
-                image.save(output, "PNG", optimize=True, compress_level=9)
+                image.save(
+                    output,
+                    "PNG",
+                    optimize=True,
+                    compress_level=9,
+                    **({"icc_profile": icc_profile} if icc_profile is not None else {}),
+                    **({"exif": exif} if exif is not None else {}),
+                )
             else:
-                image.save(output, "WEBP", quality=profile.quality, method=6)
+                image.save(
+                    output,
+                    "WEBP",
+                    quality=profile.quality,
+                    method=6,
+                    **({"icc_profile": icc_profile} if icc_profile is not None else {}),
+                    **({"exif": exif} if exif is not None else {}),
+                )
     except Image.DecompressionBombWarning as exc:
         warning = CompressionWarning("decompression_bomb", str(exc), shown_path)
         return EncodedImage(

@@ -47,6 +47,25 @@ def animated_png_bytes() -> bytes:
     return output.getvalue()
 
 
+def animated_webp_bytes() -> bytes:
+    output = io.BytesIO()
+    frames = [Image.new("RGB", (300, 300), color) for color in ("red", "blue")]
+    frames[0].save(
+        output,
+        "WEBP",
+        save_all=True,
+        append_images=frames[1:],
+        duration=100,
+        loop=0,
+        icc_profile=srgb_profile_bytes(),
+    )
+    return output.getvalue()
+
+
+def srgb_profile_bytes() -> bytes:
+    return ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+
+
 def make_epub(path: Path, images: dict[str, bytes] | None = None, *, cover: str | None = None):
     images = images or {}
     manifest = []
@@ -108,10 +127,13 @@ def test_jpeg_is_resized(tmp_path):
 
 def test_jpeg_preserves_icc_profile_when_reencoded(tmp_path):
     source = tmp_path / "profiled.epub"
-    icc_profile = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
-    image = Image.effect_noise((1800, 3600), 80).convert("RGB")
+    icc_profile = srgb_profile_bytes()
+    image = Image.effect_noise((3600, 1800), 80).convert("RGB")
+    exif = Image.Exif()
+    exif[274] = 6
+    exif[315] = "EbookToolbox test"
     encoded = io.BytesIO()
-    image.save(encoded, "JPEG", quality=98, icc_profile=icc_profile)
+    image.save(encoded, "JPEG", quality=98, icc_profile=icc_profile, exif=exif)
     make_epub(source, {"page.jpg": encoded.getvalue()})
     profile = type(BALANCED)("test", 30, 800, 1)
 
@@ -121,11 +143,59 @@ def test_jpeg_preserves_icc_profile_when_reencoded(tmp_path):
     assert result.images[0].status is ImageStatus.REPLACED
     with Image.open(io.BytesIO(read_member(result.output, "OEBPS/page.jpg"))) as output:
         assert output.info["icc_profile"] == icc_profile
+        assert output.mode == "RGB"
+        assert output.size == (400, 800)
+        assert output.getexif().get(274) is None
+        assert output.getexif()[315] == "EbookToolbox test"
+
+
+def test_grayscale_jpeg_with_incompatible_icc_is_preserved(tmp_path):
+    source = tmp_path / "gray-profiled.epub"
+    image = Image.effect_noise((1200, 1800), 80).convert("L")
+    encoded = io.BytesIO()
+    image.save(encoded, "JPEG", quality=98, icc_profile=srgb_profile_bytes())
+    original = encoded.getvalue()
+    make_epub(source, {"gray.jpg": original})
+
+    result = compress_epub(
+        CompressionRequest(source, profile=type(BALANCED)("test", 30, 400, 1))
+    )
+
+    assert result.success
+    assert result.images[0].status is ImageStatus.SKIPPED
+    assert result.images[0].reason == "icc_profile_incompatible"
+    assert read_member(result.output, "OEBPS/gray.jpg") == original
+
+
+def test_webp_preserves_compatible_icc_profile(tmp_path):
+    source = tmp_path / "profiled-webp.epub"
+    icc_profile = srgb_profile_bytes()
+    image = Image.effect_noise((1800, 3600), 80).convert("RGBA")
+    image.putalpha(100)
+    encoded = io.BytesIO()
+    image.save(encoded, "WEBP", quality=98, icc_profile=icc_profile)
+    make_epub(source, {"page.webp": encoded.getvalue()})
+
+    result = compress_epub(
+        CompressionRequest(source, profile=type(BALANCED)("test", 30, 800, 1))
+    )
+
+    assert result.success
+    assert result.images[0].status is ImageStatus.REPLACED
+    with Image.open(io.BytesIO(read_member(result.output, "OEBPS/page.webp"))) as output:
+        assert output.mode == "RGBA"
+        assert output.getextrema()[3] == (100, 100)
+        assert output.info["icc_profile"] == icc_profile
 
 
 def test_transparent_png_keeps_alpha(tmp_path):
     source = tmp_path / "transparent.epub"
-    make_epub(source, {"alpha.png": image_bytes("PNG", (800, 1200), alpha=True)})
+    icc_profile = srgb_profile_bytes()
+    image = Image.effect_noise((800, 1200), 80).convert("RGBA")
+    image.putalpha(100)
+    encoded = io.BytesIO()
+    image.save(encoded, "PNG", icc_profile=icc_profile)
+    make_epub(source, {"alpha.png": encoded.getvalue()})
     profile = type(BALANCED)("test", 72, 400, 1)
 
     result = compress_epub(CompressionRequest(source, profile=profile))
@@ -134,6 +204,7 @@ def test_transparent_png_keeps_alpha(tmp_path):
     with Image.open(io.BytesIO(read_member(result.output, "OEBPS/alpha.png"))) as image:
         assert image.mode == "RGBA"
         assert image.getextrema()[3] == (100, 100)
+        assert image.info["icc_profile"] == icc_profile
 
 
 def test_gif_is_preserved_byte_for_byte(tmp_path):
@@ -162,6 +233,21 @@ def test_multiframe_png_is_skipped_with_warning(tmp_path):
     assert result.images[0].reason == "multiple_frames"
     assert any(warning.code == "animated_image_skipped" for warning in result.warnings)
     assert read_member(result.output, "OEBPS/animated.png") == original
+
+
+def test_multiframe_webp_with_icc_is_preserved(tmp_path):
+    source = tmp_path / "animated-webp.epub"
+    original = animated_webp_bytes()
+    make_epub(source, {"animated.webp": original})
+
+    result = compress_epub(
+        CompressionRequest(source, profile=type(BALANCED)("test", 72, 100, 1))
+    )
+
+    assert result.success
+    assert result.images[0].reason == "multiple_frames"
+    assert any(warning.code == "animated_image_skipped" for warning in result.warnings)
+    assert read_member(result.output, "OEBPS/animated.webp") == original
 
 
 @pytest.mark.parametrize("include_cover,expected", [(False, "cover"), (True, None)])
@@ -359,11 +445,15 @@ def test_failed_fallback_copy_is_clean_and_retryable(tmp_path, monkeypatch):
     make_epub(source)
     before = hashlib.sha256(source.read_bytes()).digest()
     real_copy = archive_module.shutil.copyfileobj
+    real_link = archive_module.os.link
     fail_copy = True
 
-    monkeypatch.setattr(
-        archive_module.os, "link", lambda *_args: (_ for _ in ()).throw(OSError())
-    )
+    def staging_only_link(source, destination):
+        if not str(source).endswith(".copying"):
+            raise OSError("initial hard links unavailable")
+        real_link(source, destination)
+
+    monkeypatch.setattr(archive_module.os, "link", staging_only_link)
 
     def controlled_copy(src, dst, *args):
         nonlocal fail_copy
@@ -394,9 +484,14 @@ def test_concurrent_publish_uses_call_owned_staging_files(tmp_path, monkeypatch)
     for temporary, payload in zip(temporary_files, payloads, strict=True):
         temporary.write_bytes(payload)
 
-    monkeypatch.setattr(
-        archive_module.os, "link", lambda *_args: (_ for _ in ()).throw(OSError())
-    )
+    real_link = archive_module.os.link
+
+    def staging_only_link(source, destination):
+        if not str(source).endswith(".copying"):
+            raise OSError("initial hard links unavailable")
+        real_link(source, destination)
+
+    monkeypatch.setattr(archive_module.os, "link", staging_only_link)
     real_copy = archive_module.shutil.copyfileobj
     barrier = threading.Barrier(2)
 
@@ -420,123 +515,133 @@ def test_concurrent_publish_uses_call_owned_staging_files(tmp_path, monkeypatch)
     assert not list(tmp_path.glob(".output.epub.*.copying"))
 
 
-def test_concurrent_output_is_preserved_when_exclusive_open_fails(tmp_path, monkeypatch):
+def test_fallback_copy_is_invisible_until_atomic_publish(tmp_path, monkeypatch):
     temporary = tmp_path / "temporary.epub"
     output = tmp_path / "output.epub"
-    temporary.write_bytes(b"new output")
-    concurrent_data = b"concurrent output"
+    make_epub(temporary, {"page.jpg": image_bytes("JPEG")})
+    real_link = archive_module.os.link
+    real_copy = archive_module.shutil.copyfileobj
+    link_calls = 0
+    copy_started = threading.Event()
+    finish_copy = threading.Event()
+    stop_observer = threading.Event()
+    observed_absent_during_copy = threading.Event()
+    observed_outputs = []
 
+    def fail_initial_link(source, destination):
+        nonlocal link_calls
+        link_calls += 1
+        if link_calls == 1:
+            raise OSError("initial hard links unavailable")
+        real_link(source, destination)
+
+    def slow_copy(source, destination, *_args):
+        destination.write(source.read(1024))
+        copy_started.set()
+        assert finish_copy.wait(timeout=5)
+        real_copy(source, destination)
+
+    monkeypatch.setattr(archive_module.os, "link", fail_initial_link)
+    monkeypatch.setattr(archive_module.shutil, "copyfileobj", slow_copy)
+
+    def observe_output():
+        while not stop_observer.is_set():
+            if output.exists():
+                observed_outputs.append(output.read_bytes())
+            elif copy_started.is_set():
+                observed_absent_during_copy.set()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        observer = executor.submit(observe_output)
+        publication = executor.submit(
+            archive_module.publish_epub, temporary, output, overwrite=False
+        )
+        try:
+            assert copy_started.wait(timeout=5)
+            assert observed_absent_during_copy.wait(timeout=5)
+            finish_copy.set()
+            publication.result(timeout=5)
+        finally:
+            finish_copy.set()
+            stop_observer.set()
+        observer.result(timeout=5)
+
+    archive_module.validate_output(output)
+    complete_output = output.read_bytes()
+    assert all(observed == complete_output for observed in observed_outputs)
+
+
+def test_target_race_never_overwrites_existing_output(tmp_path, monkeypatch):
+    temporary = tmp_path / "temporary.epub"
+    output = tmp_path / "output.epub"
+    make_epub(temporary)
+    concurrent_data = b"concurrent output"
     monkeypatch.setattr(
         archive_module.os, "link", lambda *_args: (_ for _ in ()).throw(OSError())
     )
-    real_open = Path.open
+    real_publish = archive_module._publish_staging_no_clobber
 
-    def concurrent_open(path, mode="r", *args, **kwargs):
-        if path == output and mode == "xb":
-            output.write_bytes(concurrent_data)
-        return real_open(path, mode, *args, **kwargs)
+    def race_before_publish(staging, destination):
+        output.write_bytes(concurrent_data)
+        real_publish(staging, destination)
 
-    monkeypatch.setattr(Path, "open", concurrent_open)
+    monkeypatch.setattr(archive_module, "_publish_staging_no_clobber", race_before_publish)
 
     with pytest.raises(FileExistsError):
         archive_module.publish_epub(temporary, output, overwrite=False)
 
     assert output.read_bytes() == concurrent_data
+    assert not list(tmp_path.glob(".output.epub.*.copying"))
 
 
-def test_exclusive_copy_failure_removes_its_partial_output(tmp_path, monkeypatch):
-    temporary = tmp_path / "temporary.epub"
+def test_unsafe_no_clobber_platform_returns_structured_error(tmp_path, monkeypatch):
+    source = tmp_path / "source.epub"
     output = tmp_path / "output.epub"
-    temporary.write_bytes(b"new output")
-
-    monkeypatch.setattr(archive_module.os, "link", lambda *_args: (_ for _ in ()).throw(OSError()))
-    real_copy = archive_module.shutil.copyfileobj
-
-    def fail_final_copy(source, destination, *args):
-        if Path(destination.name) == output:
-            destination.write(source.read(2))
-            raise OSError("simulated copy failure")
-        real_copy(source, destination, *args)
-
-    monkeypatch.setattr(archive_module.shutil, "copyfileobj", fail_final_copy)
-
-    with pytest.raises(OSError, match="simulated copy failure"):
-        archive_module.publish_epub(temporary, output, overwrite=False)
-
-    assert not output.exists()
-
-
-def test_partial_cleanup_fails_closed_when_lstat_fails(tmp_path, monkeypatch):
-    output = tmp_path / "output.epub"
-    output.write_bytes(b"partial output")
-    created_identity = output.stat()
-
-    def fail_lstat(_path):
-        raise OSError("simulated stat failure")
-
-    monkeypatch.setattr(Path, "lstat", fail_lstat)
-
-    archive_module._unlink_if_same_file(output, created_identity)
-
-    assert output.read_bytes() == b"partial output"
-
-
-def test_partial_cleanup_fails_closed_for_symlink_identity(tmp_path, monkeypatch):
-    output = tmp_path / "output.epub"
-    output.write_bytes(b"replacement output")
-    created_identity = output.stat()
-    symlink_identity = os.stat_result(
-        (archive_module.stat.S_IFLNK, *tuple(output.lstat())[1:])
-    )
-    monkeypatch.setattr(Path, "lstat", lambda _path: symlink_identity)
-
-    archive_module._unlink_if_same_file(output, created_identity)
-
-    assert output.read_bytes() == b"replacement output"
-
-
-def test_failed_copy_does_not_remove_concurrent_overwrite(tmp_path, monkeypatch):
-    temporary = tmp_path / "temporary.epub"
-    replacement = tmp_path / "replacement.epub"
-    output = tmp_path / "output.epub"
-    temporary.write_bytes(b"failing output")
-    replacement_data = b"replacement output"
-    replacement.write_bytes(replacement_data)
-
+    make_epub(source)
     monkeypatch.setattr(
         archive_module.os, "link", lambda *_args: (_ for _ in ()).throw(OSError())
     )
-    real_copy = archive_module.shutil.copyfileobj
-    real_cleanup = archive_module._unlink_if_same_file
-    publish_replacement = threading.Event()
-    replacement_done = threading.Event()
+    monkeypatch.setattr(archive_module, "_IS_WINDOWS", False)
 
-    def fail_final_copy(source, destination, *args):
-        if Path(destination.name) == output:
-            destination.write(source.read(2))
-            raise OSError("simulated copy failure")
-        real_copy(source, destination, *args)
+    result = compress_epub(CompressionRequest(source, output=output))
 
-    def replace_output():
-        assert publish_replacement.wait(timeout=5)
-        archive_module.publish_epub(replacement, output, overwrite=True)
-        replacement_done.set()
+    assert not result.success
+    assert result.errors[0].code == "ArchiveError"
+    assert "Atomic no-clobber" in result.errors[0].message
+    assert not output.exists()
+    assert not list(tmp_path.glob(".output.epub.*.copying"))
 
-    def cleanup_after_replacement(path, created_identity):
-        publish_replacement.set()
-        assert replacement_done.wait(timeout=5)
-        real_cleanup(path, created_identity)
 
-    monkeypatch.setattr(archive_module.shutil, "copyfileobj", fail_final_copy)
-    monkeypatch.setattr(archive_module, "_unlink_if_same_file", cleanup_after_replacement)
+@pytest.mark.skipif(os.name != "nt", reason="Windows rename semantics only")
+def test_windows_rename_fallback_publishes_complete_file(tmp_path, monkeypatch):
+    temporary = tmp_path / "temporary.epub"
+    output = tmp_path / "output.epub"
+    make_epub(temporary)
+    monkeypatch.setattr(
+        archive_module.os, "link", lambda *_args: (_ for _ in ()).throw(OSError())
+    )
 
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        publisher = executor.submit(replace_output)
-        with pytest.raises(OSError, match="simulated copy failure"):
-            archive_module.publish_epub(temporary, output, overwrite=False)
-        publisher.result(timeout=5)
+    archive_module.publish_epub(temporary, output, overwrite=False)
 
-    assert output.read_bytes() == replacement_data
+    archive_module.validate_output(output)
+
+
+def test_overwrite_atomically_replaces_existing_output(tmp_path, monkeypatch):
+    temporary = tmp_path / "temporary.epub"
+    output = tmp_path / "output.epub"
+    make_epub(temporary)
+    expected = temporary.read_bytes()
+    output.write_bytes(b"old output")
+    monkeypatch.setattr(
+        archive_module.os,
+        "link",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("link must not be used")),
+    )
+
+    archive_module.publish_epub(temporary, output, overwrite=True)
+
+    assert output.read_bytes() == expected
+    assert not temporary.exists()
 
 
 def test_overwrite_replaces_output_symlink_without_touching_target(tmp_path):
