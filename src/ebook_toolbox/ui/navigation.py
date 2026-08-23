@@ -6,7 +6,7 @@ from PySide6.QtWidgets import QListWidget, QListWidgetItem
 NAVIGATION_ITEMS = (
     "首页",
     "EPUB 修复",
-    "EPUB 图片",
+    "EPUB 图片压缩",
     "TXT 工具",
     "漫画工具",
     "检测报告",
