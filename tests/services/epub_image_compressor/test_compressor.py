@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import io
+import threading
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -367,6 +369,39 @@ def test_failed_fallback_copy_is_clean_and_retryable(tmp_path, monkeypatch):
     assert hashlib.sha256(source.read_bytes()).digest() == before
 
 
+def test_concurrent_publish_uses_call_owned_staging_files(tmp_path, monkeypatch):
+    temporary_files = [tmp_path / f"temporary-{index}.epub" for index in range(2)]
+    output = tmp_path / "output.epub"
+    payloads = [f"output {index}".encode() for index in range(2)]
+    for temporary, payload in zip(temporary_files, payloads, strict=True):
+        temporary.write_bytes(payload)
+
+    monkeypatch.setattr(
+        archive_module.os, "link", lambda *_args: (_ for _ in ()).throw(OSError())
+    )
+    real_copy = archive_module.shutil.copyfileobj
+    barrier = threading.Barrier(2)
+
+    def synchronized_copy(source, destination, *args):
+        if str(getattr(destination, "name", "")).endswith(".copying"):
+            barrier.wait(timeout=5)
+        real_copy(source, destination, *args)
+
+    monkeypatch.setattr(archive_module.shutil, "copyfileobj", synchronized_copy)
+
+    def publish(temporary):
+        archive_module.publish_epub(temporary, output, overwrite=False)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(publish, temporary) for temporary in temporary_files]
+
+    failures = [future.exception() for future in futures if future.exception() is not None]
+    assert len(failures) == 1
+    assert isinstance(failures[0], FileExistsError)
+    assert output.read_bytes() in payloads
+    assert not list(tmp_path.glob(".output.epub.*.copying"))
+
+
 def test_concurrent_output_is_preserved_when_exclusive_open_fails(tmp_path, monkeypatch):
     temporary = tmp_path / "temporary.epub"
     output = tmp_path / "output.epub"
@@ -411,3 +446,42 @@ def test_exclusive_copy_failure_removes_its_partial_output(tmp_path, monkeypatch
         archive_module.publish_epub(temporary, output, overwrite=False)
 
     assert not output.exists()
+
+
+def test_overwrite_replaces_output_symlink_without_touching_target(tmp_path):
+    source = tmp_path / "source.epub"
+    target = tmp_path / "target.epub"
+    output = tmp_path / "output.epub"
+    make_epub(source)
+    target_data = b"keep target unchanged"
+    target.write_bytes(target_data)
+    try:
+        output.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"symbolic links are unavailable: {exc}")
+
+    result = compress_epub(CompressionRequest(source, output=output, overwrite=True))
+
+    assert result.success
+    assert result.output == output
+    assert not output.is_symlink()
+    assert target.read_bytes() == target_data
+    assert zipfile.is_zipfile(output)
+
+
+def test_output_symlink_to_source_is_rejected(tmp_path):
+    source = tmp_path / "source.epub"
+    output = tmp_path / "output.epub"
+    make_epub(source)
+    before = source.read_bytes()
+    try:
+        output.symlink_to(source)
+    except OSError as exc:
+        pytest.skip(f"symbolic links are unavailable: {exc}")
+
+    result = compress_epub(CompressionRequest(source, output=output, overwrite=True))
+
+    assert not result.success
+    assert output.is_symlink()
+    assert source.read_bytes() == before
+    assert any(error.code == "ValueError" for error in result.errors)

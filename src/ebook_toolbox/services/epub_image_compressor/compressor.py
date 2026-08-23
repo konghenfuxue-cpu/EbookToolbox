@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 from pathlib import Path
 
@@ -21,6 +22,19 @@ def _default_output(source: Path) -> Path:
     return source.with_name(f"{source.stem}_optimized.epub")
 
 
+def _paths_refer_to_same_file(source: Path, output: Path) -> bool:
+    """Compare path identities without resolving the final output component."""
+
+    try:
+        return source.samefile(output)
+    except OSError:
+        source_identity = os.path.normcase(os.path.abspath(source))
+        output_identity = os.path.normcase(
+            os.path.abspath(output.parent.resolve() / output.name)
+        )
+        return source_identity == output_identity
+
+
 def compress_epub(request: CompressionRequest) -> CompressionResult:
     """Compress supported images in one EPUB and return a structured result.
 
@@ -35,10 +49,9 @@ def compress_epub(request: CompressionRequest) -> CompressionResult:
         if not source.is_file() or source.suffix.lower() != ".epub":
             raise ValueError("Source must be an existing .epub file")
         source = source.resolve()
-        output = output.resolve()
         result.source = source
         result.output = output
-        if source == output:
+        if _paths_refer_to_same_file(source, output):
             raise ValueError("Output must not be the source EPUB")
         if output.exists() and not request.overwrite:
             raise FileExistsError(f"Output already exists: {output}")

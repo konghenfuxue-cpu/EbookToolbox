@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
 from urllib.parse import unquote
@@ -216,10 +217,12 @@ def publish_epub(temporary_output: Path, output: Path, *, overwrite: bool) -> No
     try:
         os.link(temporary_output, output)
     except OSError:
-        staging = output.with_name(f".{output.name}.{os.getpid()}.copying")
-        staging.unlink(missing_ok=True)
+        staging_file = tempfile.NamedTemporaryFile(
+            prefix=f".{output.name}.", suffix=".copying", dir=output.parent, delete=False
+        )
+        staging = Path(staging_file.name)
         try:
-            with temporary_output.open("rb") as source, staging.open("xb") as destination:
+            with staging_file as destination, temporary_output.open("rb") as source:
                 shutil.copyfileobj(source, destination)
                 destination.flush()
                 os.fsync(destination.fileno())
