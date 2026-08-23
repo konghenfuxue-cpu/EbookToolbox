@@ -3,7 +3,12 @@
 from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QStackedWidget, QWidget
 
 from ebook_toolbox.ui.navigation import NAVIGATION_ITEMS, NavigationList
-from ebook_toolbox.ui.pages import EpubImageCompressorPage, PlaceholderPage, WelcomePage
+from ebook_toolbox.ui.pages import (
+    EpubImageCompressorPage,
+    EpubTocRepairPage,
+    PlaceholderPage,
+    WelcomePage,
+)
 
 
 class MainWindow(QMainWindow):
@@ -25,7 +30,10 @@ class MainWindow(QMainWindow):
         self.pages.setObjectName("pageStack")
         self.pages.addWidget(WelcomePage())
         for title in NAVIGATION_ITEMS[1:]:
-            if title == "EPUB 图片压缩":
+            if title == "EPUB 目录修复":
+                self.epub_toc_repair_page = EpubTocRepairPage()
+                self.pages.addWidget(self.epub_toc_repair_page)
+            elif title == "EPUB 图片压缩":
                 self.epub_image_compressor_page = EpubImageCompressorPage()
                 self.pages.addWidget(self.epub_image_compressor_page)
             else:

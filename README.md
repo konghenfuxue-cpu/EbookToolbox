@@ -6,7 +6,7 @@ EbookToolbox 是一个面向 Windows、使用 PySide6 与 Qt Widgets 构建的�
 
 ## 当前界面
 
-- 左侧工具导航：首页、EPUB 修复、EPUB 图片、TXT 工具、漫画工具、检测报告和设置；
+- 左侧工具导航：首页、EPUB 目录修复、EPUB 图片压缩、TXT 工具、漫画工具、检测报告和设置；
 - 中央区域随导航切换，首页包含项目简介与最近任务占位区；
 - 底部状态栏展示应用状态；
 - Qt Material 提供基础界面主题。
@@ -124,5 +124,5 @@ else:
     print(result.errors)
 ```
 
-`replace_existing=False` 可保留已有且目标有效的格式主目录。当前版本仅提供同步的纯
-Python core 和自动化测试，尚未接入 GUI、后台任务、CLI 或批处理。
+`replace_existing=False` 可保留已有且目标有效的格式主目录。目录修复 core 已接入
+“EPUB 目录修复”页面，并通过后台线程池执行；当前尚未提供 CLI 或批处理。
