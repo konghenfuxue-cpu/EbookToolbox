@@ -5,6 +5,7 @@ from PySide6.QtCore import Qt
 from ebook_toolbox.ui.main_window import MainWindow
 from ebook_toolbox.ui.navigation import NAVIGATION_ITEMS
 from ebook_toolbox.ui.pages.epub_image_compressor import EpubImageCompressorPage
+from ebook_toolbox.ui.pages.epub_toc_repair import EpubTocRepairPage
 
 
 def test_main_window_starts(qtbot) -> None:
@@ -17,6 +18,9 @@ def test_main_window_starts(qtbot) -> None:
     assert window.pages.count() == len(NAVIGATION_ITEMS)
     assert window.pages.currentIndex() == 0
     assert window.statusBar().currentMessage() == "就绪"
+    assert NAVIGATION_ITEMS[1] == "EPUB 目录修复"
+    assert isinstance(window.pages.widget(1), EpubTocRepairPage)
+    assert window.epub_toc_repair_page is window.pages.widget(1)
     assert isinstance(window.pages.widget(2), EpubImageCompressorPage)
 
 
