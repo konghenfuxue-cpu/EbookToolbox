@@ -100,3 +100,29 @@ else:
 
 当前版本只有同步的纯 Python core 和自动化测试，尚未接入 PySide6 页面、后台任务、
 批处理或 CLI。调用方应检查 `result.success`、`result.errors` 和 `result.warnings`。
+
+## EPUB 目录修复 core（第一版）
+
+仓库现已提供不依赖 PySide6 的单本 EPUB 目录修复 core，位于
+`src/ebook_toolbox/services/epub_toc_repair/`。它可根据书脊正文标题识别中文及常见英文
+卷章结构，重建 EPUB2 NCX、EPUB3 `nav.xhtml`，并在目录文档缺失时补齐必要的 OPF
+manifest/spine 引用。默认不覆盖输入或已有输出，默认输出名为
+`<原文件名>_toc_fixed.epub`。
+
+```python
+from pathlib import Path
+
+from ebook_toolbox.services.epub_toc_repair import (
+    TocRepairRequest,
+    repair_epub_toc,
+)
+
+result = repair_epub_toc(TocRepairRequest(source=Path("collection.epub")))
+if result.success:
+    print(result.output)
+else:
+    print(result.errors)
+```
+
+`replace_existing=False` 可保留已有且目标有效的格式主目录。当前版本仅提供同步的纯
+Python core 和自动化测试，尚未接入 GUI、后台任务、CLI 或批处理。
