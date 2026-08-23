@@ -5,6 +5,7 @@ from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QStackedWidget, QWidget
 from ebook_toolbox.ui.navigation import NAVIGATION_ITEMS, NavigationList
 from ebook_toolbox.ui.pages import (
     EpubImageCompressorPage,
+    EpubStructuralRepairPage,
     EpubTocRepairPage,
     PlaceholderPage,
     WelcomePage,
@@ -36,6 +37,9 @@ class MainWindow(QMainWindow):
             elif title == "EPUB 图片压缩":
                 self.epub_image_compressor_page = EpubImageCompressorPage()
                 self.pages.addWidget(self.epub_image_compressor_page)
+            elif title == "EPUB 综合修复":
+                self.epub_structural_repair_page = EpubStructuralRepairPage()
+                self.pages.addWidget(self.epub_structural_repair_page)
             else:
                 self.pages.addWidget(PlaceholderPage(title))
 

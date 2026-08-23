@@ -5,6 +5,7 @@ from PySide6.QtCore import Qt
 from ebook_toolbox.ui.main_window import MainWindow
 from ebook_toolbox.ui.navigation import NAVIGATION_ITEMS
 from ebook_toolbox.ui.pages.epub_image_compressor import EpubImageCompressorPage
+from ebook_toolbox.ui.pages.epub_structural_repair import EpubStructuralRepairPage
 from ebook_toolbox.ui.pages.epub_toc_repair import EpubTocRepairPage
 
 
@@ -22,6 +23,11 @@ def test_main_window_starts(qtbot) -> None:
     assert isinstance(window.pages.widget(1), EpubTocRepairPage)
     assert window.epub_toc_repair_page is window.pages.widget(1)
     assert isinstance(window.pages.widget(2), EpubImageCompressorPage)
+    assert NAVIGATION_ITEMS[2] == "EPUB 图片压缩"
+    assert window.epub_image_compressor_page is window.pages.widget(2)
+    assert NAVIGATION_ITEMS[3] == "EPUB 综合修复"
+    assert isinstance(window.pages.widget(3), EpubStructuralRepairPage)
+    assert window.epub_structural_repair_page is window.pages.widget(3)
 
 
 def test_navigation_switches_page(qtbot) -> None:

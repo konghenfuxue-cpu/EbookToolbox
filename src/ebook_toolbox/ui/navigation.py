@@ -7,6 +7,7 @@ NAVIGATION_ITEMS = (
     "首页",
     "EPUB 目录修复",
     "EPUB 图片压缩",
+    "EPUB 综合修复",
     "TXT 工具",
     "漫画工具",
     "检测报告",
