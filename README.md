@@ -3,14 +3,16 @@
 EbookToolbox 是一个面向个人 Windows 电脑、使用 PySide6 与 Qt Widgets 构建的 EPUB
 工具箱。业务 core 与界面分离，耗时操作通过后台任务运行，避免阻塞主界面。
 
-当前版本为 `0.1.0`，已提供三个正式功能页面：
+当前版本为 `0.1.0`，已提供四个正式功能页面：
 
 - **EPUB 图片压缩**：压缩 JPEG、PNG 和静态 WebP，可选压缩策略和封面处理；
 - **EPUB 目录修复**：识别卷章结构并修复 EPUB2 NCX 与 EPUB3 nav 目录；
 - **EPUB 综合修复**：单本或顺序批量修复内部路径、资源引用和 OPF 结构。
+- **TXT 排版并合并**：按 `[作者]` 文件名分组，自动识别 UTF-8、UTF-16 和 GB18030，
+  清理不可见字符并生成 UTF-8 BOM 作者合集。
 
-三个工具默认都不会覆盖源 EPUB。图片压缩、目录修复与综合结构修复相互独立，不会被
-其他页面自动串联执行。
+所有工具默认都不会覆盖源文件。TXT 合并默认输出到输入目录下独立的
+`EbookToolbox-合集` 文件夹；各工具相互独立，不会被其他页面自动串联执行。
 
 ## 开发环境运行
 
@@ -104,13 +106,14 @@ dist/EbookToolbox-portable.zip
 
 ## 服务层概览
 
-三个功能页面仅收集参数和展示结构化结果，实际处理位于以下纯 Python 服务中：
+四个功能页面仅收集参数和展示结构化结果，实际处理位于以下纯 Python 服务中：
 
 ```text
 src/ebook_toolbox/services/
 ├── epub_image_compressor/    # 单本 EPUB 图片压缩
 ├── epub_toc_repair/          # 单本 EPUB 目录修复
-└── epub_structural_repair/   # 单本及顺序批量综合结构修复
+├── epub_structural_repair/   # 单本及顺序批量综合结构修复
+└── text_merge/               # TXT 排版与按作者合并
 ```
 
 服务层不依赖 PySide6，可单独调用和测试。例如：
@@ -131,6 +134,7 @@ from ebook_toolbox.services.epub_toc_repair import (
     TocRepairRequest,
     repair_epub_toc,
 )
+from ebook_toolbox.services.text_merge import TextMergeRequest, merge_author_texts
 
 compressed = compress_epub(
     CompressionRequest(source=Path("book.epub"), profile=BALANCED)
@@ -139,6 +143,7 @@ toc_fixed = repair_epub_toc(TocRepairRequest(source=Path("collection.epub")))
 repaired = repair_epub_batch(
     BatchRepairRequest(inputs=(Path("library"),), recursive=True)
 )
+merged = merge_author_texts(TextMergeRequest(Path("txt-library")))
 ```
 
 调用方应始终检查结果的 `success`、`errors` 和 `warnings`，不要仅根据输出路径判断成功。
@@ -153,7 +158,7 @@ scripts/build_windows.ps1            # 完整便携版构建脚本
 src/ebook_toolbox/
 ├── app.py                           # QApplication、主题和程序入口
 ├── resources/                       # 项目自有应用图标
-├── services/                        # 三个纯 Python EPUB 服务
+├── services/                        # EPUB 与 TXT 纯 Python 服务
 └── ui/                              # 主窗口、导航和正式功能页面
 tests/                               # core 与 pytest-qt 自动化测试
 ```
