@@ -137,6 +137,45 @@ function Assert-RequiredFilePattern {
     }
 }
 
+function Invoke-PortableStartupSmokeTest {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ExecutablePath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$WorkingDirectory
+    )
+
+    # A successful PyInstaller exit only proves that files were collected. Start the
+    # windowed application long enough to load Python, PySide6/QtGui and resources.
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $ExecutablePath
+    $startInfo.WorkingDirectory = $WorkingDirectory
+    $startInfo.UseShellExecute = $false
+    $startInfo.ArgumentList.Add("--self-test")
+    $process = [System.Diagnostics.Process]::Start($startInfo)
+    if ($null -eq $process) {
+        throw "无法启动便携版 EXE：$ExecutablePath"
+    }
+
+    try {
+        if (-not $process.WaitForExit(15000)) {
+            throw "便携版 EXE 自检在 15 秒内未结束。"
+        }
+        if ($process.ExitCode -ne 0) {
+            throw "便携版 EXE 自检失败（退出码 $($process.ExitCode)）。"
+        }
+        Write-Host "便携版启动 smoke test 通过（QtGui、QApplication 与主窗口初始化成功）。" -ForegroundColor Green
+    }
+    finally {
+        if (-not $process.HasExited) {
+            $process.Kill($true)
+            $process.WaitForExit(5000)
+        }
+        $process.Dispose()
+    }
+}
+
 try {
     if (-not [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
         [System.Runtime.InteropServices.OSPlatform]::Windows
@@ -202,6 +241,7 @@ try {
         @("PySide6/plugins/platforms/qwindows.dll", "Qt Windows 平台插件"),
         @("PySide6/plugins/imageformats/qsvg.dll", "Qt SVG 图像插件"),
         @("PySide6/plugins/imageformats/qico.dll", "Qt ICO 图像插件"),
+        @("PySide6/QtGui.pyd", "PySide6 QtGui 模块"),
         @("ebook_toolbox/resources/app_icon.ico", "应用 ICO 图标"),
         @("ebook_toolbox/resources/app_icon.svg", "应用 SVG 图标")
     )
@@ -249,6 +289,17 @@ try {
         $examples = ($forbiddenItems | Select-Object -First 5 -ExpandProperty FullName) -join "; "
         throw "便携目录包含禁止的测试、迁移或缓存内容：$examples"
     }
+
+    foreach ($forbiddenHostDll in @("icuuc.dll", "icudt78.dll")) {
+        $unexpectedDll = Join-Path $internalDirectory $forbiddenHostDll
+        if (Test-Path -LiteralPath $unexpectedDll) {
+            throw "便携目录误收集宿主机 ICU 运行库：$unexpectedDll"
+        }
+    }
+
+    Invoke-PortableStartupSmokeTest `
+        -ExecutablePath $executablePath `
+        -WorkingDirectory $portableDirectory
 
     Compress-Archive -LiteralPath $portableDirectory -DestinationPath $zipPath -CompressionLevel Optimal
     Assert-RequiredFile -Path $zipPath -Description "便携版 ZIP"
