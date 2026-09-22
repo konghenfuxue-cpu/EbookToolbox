@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img">
+  <title>EbookToolbox application icon</title>
+  <rect x="24" y="24" width="464" height="464" rx="104" fill="#1565c0"/>
+  <path
+    d="M92 142c52-20 108-8 164 34v236c-51-40-106-55-164-35z"
+    fill="#ffffff"
+  />
+  <path
+    d="M420 142c-52-20-108-8-164 34v236c51-40 106-55 164-35z"
+    fill="#e3f2fd"
+  />
+  <path d="M256 176v236" stroke="#0d47a1" stroke-width="18" stroke-linecap="round"/>
+  <path d="M126 205c37-8 70 0 99 20" stroke="#64b5f6" stroke-width="14" stroke-linecap="round"/>
+  <path d="M126 255c37-8 70 0 99 20" stroke="#64b5f6" stroke-width="14" stroke-linecap="round"/>
+  <path d="M386 205c-37-8-70 0-99 20" stroke="#42a5f5" stroke-width="14" stroke-linecap="round"/>
+  <path d="M386 255c-37-8-70 0-99 20" stroke="#42a5f5" stroke-width="14" stroke-linecap="round"/>
+  <path d="M205 99h102" stroke="#80d8ff" stroke-width="20" stroke-linecap="round"/>
+</svg>
