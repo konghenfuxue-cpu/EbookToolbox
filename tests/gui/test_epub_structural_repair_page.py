@@ -34,6 +34,7 @@ def test_page_initializes_with_safe_defaults(qtbot) -> None:
     assert not page.recursive_check.isChecked()
     assert not page.overwrite_check.isChecked()
     assert not page.calibre_check.isChecked()
+    assert not page.image_spine_check.isChecked()
     assert not page.start_button.isEnabled()
     assert not page.remove_selected_button.isEnabled()
     assert not page.clear_inputs_button.isEnabled()
@@ -121,6 +122,7 @@ def test_controls_map_to_public_batch_request(qtbot, tmp_path) -> None:
     page.recursive_check.setChecked(True)
     page.overwrite_check.setChecked(True)
     page.calibre_check.setChecked(True)
+    page.image_spine_check.setChecked(True)
 
     request = page.build_request()
 
@@ -130,6 +132,7 @@ def test_controls_map_to_public_batch_request(qtbot, tmp_path) -> None:
     assert request.recursive
     assert request.overwrite
     assert request.run_calibre_check
+    assert request.wrap_image_spine
 
 
 def test_missing_inputs_cannot_start_worker(qtbot, monkeypatch) -> None:
@@ -150,9 +153,7 @@ def test_missing_inputs_cannot_start_worker(qtbot, monkeypatch) -> None:
     assert not called
     assert page._worker is None
     assert page.status_label.text() == "无法开始修复。"
-    assert "[input_error] 请先添加至少一个 EPUB 文件或文件夹" in (
-        page.result_details.toPlainText()
-    )
+    assert "[input_error] 请先添加至少一个 EPUB 文件或文件夹" in (page.result_details.toPlainText())
 
 
 def test_background_run_keeps_gui_responsive_and_restores_controls(
@@ -197,6 +198,7 @@ def test_background_run_keeps_gui_responsive_and_restores_controls(
         page.recursive_check,
         page.overwrite_check,
         page.calibre_check,
+        page.image_spine_check,
         page.start_button,
     )
     assert all(not control.isEnabled() for control in controls)
@@ -247,9 +249,7 @@ def test_result_table_renders_success_failure_warning_and_summary(
                 FileRepairResult(good_source, good_output, good),
                 FileRepairResult(bad_source, bad_output, bad),
             ],
-            warnings=[
-                RepairWarning("non_epub_skipped", "不是 EPUB，已跳过", skipped_source)
-            ],
+            warnings=[RepairWarning("non_epub_skipped", "不是 EPUB，已跳过", skipped_source)],
         )
 
     monkeypatch.setattr(page_module, "repair_epub_batch", mixed_result)

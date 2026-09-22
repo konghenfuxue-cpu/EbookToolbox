@@ -94,9 +94,7 @@ def repair_epub_batch(request: BatchRepairRequest) -> BatchRepairResult:
     for source, output in planned:
         key = os.path.normcase(os.path.abspath(output)).casefold()
         by_output[key].append((source, output))
-    conflicts = {
-        key: values for key, values in by_output.items() if len(values) > 1
-    }
+    conflicts = {key: values for key, values in by_output.items() if len(values) > 1}
 
     for source, output in planned:
         output_key = os.path.normcase(os.path.abspath(output)).casefold()
@@ -119,6 +117,7 @@ def repair_epub_batch(request: BatchRepairRequest) -> BatchRepairResult:
                     overwrite=request.overwrite,
                     reference=request.reference,
                     run_calibre_check=request.run_calibre_check,
+                    wrap_image_spine=request.wrap_image_spine,
                 )
             )
         except Exception as exc:

@@ -33,6 +33,7 @@ class RepairRequest:
     overwrite: bool = False
     reference: Path | None = None
     run_calibre_check: bool = False
+    wrap_image_spine: bool = False
 
 
 @dataclass(slots=True)
@@ -44,6 +45,8 @@ class RepairResult:
     added_manifest_resources: list[str] = field(default_factory=list)
     removed_manifest_items: list[str] = field(default_factory=list)
     removed_spine_items: list[str] = field(default_factory=list)
+    detected_image_spine_items: list[str] = field(default_factory=list)
+    wrapped_image_spine_items: list[str] = field(default_factory=list)
     restored_resources: list[str] = field(default_factory=list)
     language_added: bool = False
     calibre_status: str | None = None
@@ -62,6 +65,7 @@ class BatchRepairRequest:
     overwrite: bool = False
     reference: Path | None = None
     run_calibre_check: bool = False
+    wrap_image_spine: bool = False
 
 
 @dataclass(frozen=True, slots=True)

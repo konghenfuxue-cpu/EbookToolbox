@@ -35,9 +35,7 @@ from ebook_toolbox.services.epub_structural_repair import (
     repair_epub_batch,
 )
 
-_SKIPPED_WARNING_CODES = frozenset(
-    {"input_skipped", "non_epub_skipped", "input_scan_failed"}
-)
+_SKIPPED_WARNING_CODES = frozenset({"input_skipped", "non_epub_skipped", "input_scan_failed"})
 
 
 class _WorkerSignals(QObject):
@@ -163,9 +161,15 @@ class EpubStructuralRepairPage(QWidget):
         self.overwrite_check.setObjectName("structuralRepairOverwrite")
         self.calibre_check = QCheckBox("运行 Calibre 外部检查")
         self.calibre_check.setObjectName("structuralRepairCalibreCheck")
+        self.image_spine_check = QCheckBox("将 spine 直接图片包装为 XHTML")
+        self.image_spine_check.setObjectName("structuralRepairImageSpineWrap")
+        self.image_spine_check.setToolTip(
+            "默认仅检测并报告；启用后生成独立 XHTML 包装页，不修改原图片。"
+        )
         options_row.addWidget(self.recursive_check)
         options_row.addWidget(self.overwrite_check)
         options_row.addWidget(self.calibre_check)
+        options_row.addWidget(self.image_spine_check)
         options_row.addStretch(1)
         layout.addLayout(options_row)
 
@@ -268,6 +272,7 @@ class EpubStructuralRepairPage(QWidget):
             overwrite=self.overwrite_check.isChecked(),
             reference=Path(reference_text) if reference_text else None,
             run_calibre_check=self.calibre_check.isChecked(),
+            wrap_image_spine=self.image_spine_check.isChecked(),
         )
 
     @Slot()
@@ -341,6 +346,7 @@ class EpubStructuralRepairPage(QWidget):
             self.recursive_check,
             self.overwrite_check,
             self.calibre_check,
+            self.image_spine_check,
             self.start_button,
         ):
             control.setEnabled(not running)
@@ -428,9 +434,7 @@ class EpubStructuralRepairPage(QWidget):
             warning for warning in result.warnings if warning.code in _SKIPPED_WARNING_CODES
         ]
         for warning in skipped_warnings:
-            self._append_result_row(
-                str(warning.path or ""), "跳过", warnings=1, errors=""
-            )
+            self._append_result_row(str(warning.path or ""), "跳过", warnings=1, errors="")
 
         if result.errors:
             self._append_result_row(
@@ -465,9 +469,7 @@ class EpubStructuralRepairPage(QWidget):
 
     @Slot(str)
     def _handle_worker_failure(self, message: str) -> None:
-        result = BatchRepairResult(
-            errors=[RepairError("unexpected_error", message)]
-        )
+        result = BatchRepairResult(errors=[RepairError("unexpected_error", message)])
         self._handle_result(result)
 
 

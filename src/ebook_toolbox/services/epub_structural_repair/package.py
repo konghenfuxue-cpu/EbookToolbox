@@ -23,6 +23,12 @@ from .paths import (
 )
 
 DC_NS = "http://purl.org/dc/elements/1.1/"
+XHTML_NS = "http://www.w3.org/1999/xhtml"
+RASTER_IMAGE_EXTENSIONS = {
+    extension
+    for extension, media_type in MEDIA_TYPES.items()
+    if media_type.startswith("image/") and media_type != "image/svg+xml"
+}
 
 
 @dataclass(slots=True)
@@ -31,6 +37,9 @@ class PackageChanges:
     added_resources: list[str] = field(default_factory=list)
     removed_manifest_items: list[str] = field(default_factory=list)
     removed_spine_items: list[str] = field(default_factory=list)
+    detected_image_spine_items: list[str] = field(default_factory=list)
+    wrapped_image_spine_items: list[str] = field(default_factory=list)
+    generated_resources: dict[str, bytes] = field(default_factory=dict)
     language_added: bool = False
 
 
@@ -79,7 +88,36 @@ def manifest_targets(data: bytes, opf_path: str) -> list[str]:
     return list(dict.fromkeys(targets))
 
 
-def repair_package(data: bytes, opf_path: str, available: set[str]) -> PackageChanges:
+def _image_wrapper(image_target: str, wrapper_target: str) -> bytes:
+    relative_image = quote(
+        posixpath.relpath(image_target, posixpath.dirname(wrapper_target)), safe="/-._~"
+    )
+    html = ET.Element(f"{{{XHTML_NS}}}html")
+    head = ET.SubElement(html, f"{{{XHTML_NS}}}head")
+    ET.SubElement(head, f"{{{XHTML_NS}}}title").text = PurePosixPath(image_target).name
+    style = ET.SubElement(head, f"{{{XHTML_NS}}}style")
+    style.text = (
+        "html,body{margin:0;padding:0;width:100%;height:100%;}"
+        "body{display:flex;align-items:center;justify-content:center;}"
+        "img{max-width:100%;max-height:100%;object-fit:contain;}"
+    )
+    body = ET.SubElement(html, f"{{{XHTML_NS}}}body")
+    ET.SubElement(
+        body,
+        f"{{{XHTML_NS}}}img",
+        {"src": relative_image, "alt": PurePosixPath(image_target).stem},
+    )
+    ET.indent(html)
+    return ET.tostring(html, encoding="utf-8", xml_declaration=True)
+
+
+def repair_package(
+    data: bytes,
+    opf_path: str,
+    available: set[str],
+    *,
+    wrap_image_spine: bool = False,
+) -> PackageChanges:
     try:
         root = ET.fromstring(data)
     except ET.ParseError as exc:
@@ -102,11 +140,13 @@ def repair_package(data: bytes, opf_path: str, available: set[str]) -> PackageCh
 
     registered_targets: set[str] = set()
     used_ids: set[str] = set()
+    manifest_items: dict[str, tuple[ET.Element, str, str]] = {}
     for item in list(manifest):
         if _local(item.tag) != "item":
             continue
         item_id = (item.get("id") or "").strip()
         href = (item.get("href") or "").strip()
+        media_type = (item.get("media-type") or "").strip().casefold()
         target = ""
         if href:
             try:
@@ -120,6 +160,7 @@ def repair_package(data: bytes, opf_path: str, available: set[str]) -> PackageCh
             continue
         used_ids.add(item_id)
         registered_targets.add(target)
+        manifest_items[item_id] = (item, target, media_type)
 
     opf_directory = posixpath.dirname(opf_path) or "."
     counter = 0
@@ -146,9 +187,11 @@ def repair_package(data: bytes, opf_path: str, available: set[str]) -> PackageCh
             {"id": item_id, "href": href, "media-type": MEDIA_TYPES[extension]},
         )
         registered_targets.add(target)
+        manifest_items[item_id] = (manifest[-1], target, MEDIA_TYPES[extension])
         changes.added_resources.append(target)
         changed = True
 
+    wrapper_counter = 0
     for itemref in list(spine):
         if _local(itemref.tag) != "itemref":
             continue
@@ -157,6 +200,54 @@ def repair_package(data: bytes, opf_path: str, available: set[str]) -> PackageCh
             spine.remove(itemref)
             changes.removed_spine_items.append(item_id or "<empty idref>")
             changed = True
+            continue
+        _item, target, media_type = manifest_items[item_id]
+        extension = PurePosixPath(target).suffix.casefold()
+        if not (
+            (media_type.startswith("image/") and media_type != "image/svg+xml")
+            or extension in RASTER_IMAGE_EXTENSIONS
+        ):
+            continue
+        changes.detected_image_spine_items.append(target)
+        if not wrap_image_spine:
+            continue
+        wrapper_counter += 1
+        wrapper_target = posixpath.normpath(
+            posixpath.join(
+                posixpath.dirname(opf_path),
+                "repair-wrappers",
+                f"image-spine-{wrapper_counter:04d}.xhtml",
+            )
+        )
+        while wrapper_target in available:
+            wrapper_counter += 1
+            wrapper_target = posixpath.normpath(
+                posixpath.join(
+                    posixpath.dirname(opf_path),
+                    "repair-wrappers",
+                    f"image-spine-{wrapper_counter:04d}.xhtml",
+                )
+            )
+        wrapper_id = f"repair_image_spine_{wrapper_counter:04d}"
+        while wrapper_id in used_ids:
+            wrapper_counter += 1
+            wrapper_id = f"repair_image_spine_{wrapper_counter:04d}"
+        wrapper_href = quote(
+            posixpath.relpath(wrapper_target, posixpath.dirname(opf_path) or "."),
+            safe="/-._~",
+        )
+        ET.SubElement(
+            manifest,
+            _tag_like(manifest, "item"),
+            {"id": wrapper_id, "href": wrapper_href, "media-type": "application/xhtml+xml"},
+        )
+        itemref.set("idref", wrapper_id)
+        used_ids.add(wrapper_id)
+        registered_targets.add(wrapper_target)
+        available.add(wrapper_target)
+        changes.generated_resources[wrapper_target] = _image_wrapper(target, wrapper_target)
+        changes.wrapped_image_spine_items.append(target)
+        changed = True
 
     if changed:
         ET.indent(root)
@@ -185,9 +276,7 @@ def validate_repaired_epub(path: BinaryIO) -> dict[str, int]:
                 root = ET.fromstring(archive.read(opf_path))
             except ET.ParseError as exc:
                 raise ArchiveError(f"Output OPF is invalid XML: {opf_path}") from exc
-            metadata = next(
-                (node for node in root.iter() if _local(node.tag) == "metadata"), None
-            )
+            metadata = next((node for node in root.iter() if _local(node.tag) == "metadata"), None)
             language = (
                 next((node for node in metadata if _local(node.tag) == "language"), None)
                 if metadata is not None
@@ -195,18 +284,19 @@ def validate_repaired_epub(path: BinaryIO) -> dict[str, int]:
             )
             if language is None or not "".join(language.itertext()).strip():
                 raise ArchiveError(f"Output OPF has no dc:language: {opf_path}")
-            manifest: dict[str, str] = {}
+            manifest: dict[str, tuple[str, str]] = {}
             for item in root.iter():
                 if _local(item.tag) != "item":
                     continue
                 item_id = (item.get("id") or "").strip()
                 href = (item.get("href") or "").strip()
+                media_type = (item.get("media-type") or "").strip().casefold()
                 if not item_id or not href or item_id in manifest:
                     raise ArchiveError(f"Output OPF contains an invalid manifest item: {opf_path}")
                 target = resolve_local_path(opf_path, href)
                 if target not in names:
                     raise ArchiveError(f"Manifest resource is missing: {target}")
-                manifest[item_id] = target
+                manifest[item_id] = (target, media_type)
                 registered.add(target)
             manifest_count += len(manifest)
             for itemref in root.iter():
@@ -215,8 +305,15 @@ def validate_repaired_epub(path: BinaryIO) -> dict[str, int]:
                 item_id = (itemref.get("idref") or "").strip()
                 if item_id not in manifest:
                     raise ArchiveError(f"Spine references a missing manifest id: {item_id}")
-                extension = PurePosixPath(manifest[item_id]).suffix.casefold()
-                if extension in {".xhtml", ".html", ".htm", ".svg"}:
+                target, media_type = manifest[item_id]
+                extension = PurePosixPath(target).suffix.casefold()
+                if extension in {
+                    ".xhtml",
+                    ".html",
+                    ".htm",
+                    ".svg",
+                    *RASTER_IMAGE_EXTENSIONS,
+                } or (media_type.startswith("image/") and media_type != "image/svg+xml"):
                     readable_spine += 1
         relevant = {
             name

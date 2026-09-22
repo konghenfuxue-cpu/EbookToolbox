@@ -7,7 +7,8 @@ EbookToolbox 是一个面向个人 Windows 电脑、使用 PySide6 与 Qt Widget
 
 - **EPUB 图片压缩**：压缩 JPEG、PNG 和静态 WebP，可选压缩策略和封面处理；
 - **EPUB 目录修复**：识别卷章结构并修复 EPUB2 NCX 与 EPUB3 nav 目录；
-- **EPUB 综合修复**：单本或顺序批量修复内部路径、资源引用和 OPF 结构。
+- **EPUB 综合修复**：单本或顺序批量修复内部路径、资源引用和 OPF 结构；检测
+  spine 直接图片，并可显式生成 XHTML 包装页（默认仅报告）。
 - **TXT 排版并合并**：按 `[作者]` 文件名分组，自动识别 UTF-8、UTF-16 和 GB18030，
   清理不可见字符并生成 UTF-8 BOM 作者合集。
 
