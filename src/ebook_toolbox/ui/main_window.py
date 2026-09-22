@@ -60,6 +60,7 @@ class MainWindow(QMainWindow):
             elif title == "TXT 工具":
                 self.text_merge_page = TextMergePage()
                 self.text_merge_page.merge_finished.connect(self._record_text_merge)
+                self.text_merge_page.chapter_finished.connect(self._record_text_chapter)
                 self.pages.addWidget(self.text_merge_page)
             elif title == "检测报告":
                 self.detection_report_page = DetectionReportPage(self.report_store)
@@ -151,6 +152,16 @@ class MainWindow(QMainWindow):
             tool="TXT 排版并合并",
             source=getattr(result, "source_directory", ""),
             output=getattr(result, "output_directory", None),
+            success=bool(getattr(result, "success", False)),
+            warnings=getattr(result, "warnings", ()),
+            errors=getattr(result, "errors", ()),
+        )
+
+    def _record_text_chapter(self, result: object) -> None:
+        self._add_report(
+            tool="TXT 卷章识别",
+            source=getattr(result, "source", ""),
+            output=getattr(result, "output", None),
             success=bool(getattr(result, "success", False)),
             warnings=getattr(result, "warnings", ()),
             errors=getattr(result, "errors", ()),
