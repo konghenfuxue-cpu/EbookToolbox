@@ -1,41 +1,36 @@
 # EbookToolbox（电子书工具箱）
 
-EbookToolbox 是一个面向 Windows、使用 PySide6 与 Qt Widgets 构建的桌面电子书工具箱。
-项目目前处于**阶段 1：应用外壳**：已经提供主窗口、工具导航、欢迎页和页面占位符，
-尚未接入 EPUB、TXT 或漫画的实际处理逻辑。
+EbookToolbox 是一个面向个人 Windows 电脑、使用 PySide6 与 Qt Widgets 构建的 EPUB
+工具箱。业务 core 与界面分离，耗时操作通过后台任务运行，避免阻塞主界面。
 
-## 当前界面
+当前版本为 `0.1.0`，已提供三个正式功能页面：
 
-- 左侧工具导航：首页、EPUB 目录修复、EPUB 图片压缩、TXT 工具、漫画工具、检测报告和设置；
-- 中央区域随导航切换，首页包含项目简介与最近任务占位区；
-- 底部状态栏展示应用状态；
-- Qt Material 提供基础界面主题。
+- **EPUB 图片压缩**：压缩 JPEG、PNG 和静态 WebP，可选压缩策略和封面处理；
+- **EPUB 目录修复**：识别卷章结构并修复 EPUB2 NCX 与 EPUB3 nav 目录；
+- **EPUB 综合修复**：单本或顺序批量修复内部路径、资源引用和 OPF 结构。
 
-处理核心与界面将保持分离；后续耗时任务会通过后台任务框架执行，避免阻塞 Qt 主线程。
+三个工具默认都不会覆盖源 EPUB。图片压缩、目录修复与综合结构修复相互独立，不会被
+其他页面自动串联执行。
 
-## 环境要求
+## 开发环境运行
 
-- Python 3.11 或更高版本
-- [uv](https://docs.astral.sh/uv/)（推荐）
-
-## Windows 安装与运行
-
-在 PowerShell 中进入项目目录，然后安装依赖并启动应用：
+需要 Windows、Python 3.11 或更高版本，以及
+[uv](https://docs.astral.sh/uv/)。在 PowerShell 中进入项目根目录：
 
 ```powershell
 uv sync --dev
 uv run python main.py
 ```
 
-也可以在 PowerShell 中设置 `PYTHONPATH` 后使用模块入口：
+也可以使用模块入口：
 
 ```powershell
 $env:PYTHONPATH = "src"
 uv run python -m ebook_toolbox
 ```
 
-项目默认使用 uv 的通用默认 PyPI，不在仓库中绑定特定镜像。如果国内网络访问较慢，
-可以仅在当前 PowerShell 会话中临时配置清华 PyPI 镜像、超时时间和文件复制模式：
+项目不绑定特定 Python 包镜像。如果当前网络访问默认 PyPI 较慢，可以只为当前
+PowerShell 会话临时设置镜像：
 
 ```powershell
 $env:UV_DEFAULT_INDEX = "https://pypi.tuna.tsinghua.edu.cn/simple"
@@ -44,41 +39,81 @@ $env:UV_LINK_MODE = "copy"
 uv sync --dev
 ```
 
-关闭当前 PowerShell 窗口后，这些临时环境变量不会继续生效。
+开发检查命令：
 
-## 开发检查
-
-在无桌面显示服务的 Linux 环境中，可令 Qt 使用 offscreen 平台：
-
-```bash
-QT_QPA_PLATFORM=offscreen uv run pytest
+```powershell
 uv run ruff check .
+uv run pytest
 ```
 
-## 目录结构
+## 构建 Windows 便携版
+
+项目使用 PyInstaller 的 **one-folder** 模式生成无控制台窗口程序。PyInstaller 只属于
+开发依赖，不会作为应用运行依赖安装到最终用户的电脑。
+
+在 Windows PowerShell 中进入项目根目录，然后运行：
+
+```powershell
+.\scripts\build_windows.ps1
+```
+
+如果本机执行策略禁止运行项目脚本，可以仅为当前 PowerShell 进程临时放行：
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\scripts\build_windows.ps1
+```
+
+脚本会依次执行以下工作：
+
+1. 确认系统为 Windows，且当前目录是项目根目录；
+2. 执行 `uv sync --dev`、Ruff 和完整 pytest；
+3. 只清理本项目明确的 PyInstaller 工作目录及便携版输出；
+4. 使用 `EbookToolbox.spec` 构建 `EbookToolbox.exe`；
+5. 检查 Qt Windows/图像插件、qt-material 主题与字体、Pillow 原生扩展和应用图标；
+6. 将整个 `EbookToolbox` 目录压缩为便携版 ZIP，并打印实际大小。
+
+构建输出为：
 
 ```text
-src/ebook_toolbox/
-├── app.py                 # QApplication 创建和程序入口
-├── ui/
-│   ├── main_window.py     # 主窗口与页面切换
-│   ├── navigation.py      # 左侧工具导航
-│   └── pages/             # 欢迎页和功能占位页
-└── __main__.py            # python -m ebook_toolbox 入口
-tests/gui/                 # pytest-qt 界面测试
+dist/EbookToolbox/EbookToolbox.exe
+dist/EbookToolbox-portable.zip
 ```
 
-## 开发范围
+构建中间文件位于 `build/EbookToolbox/`。`build/`、`dist/` 和开发缓存均被 Git 忽略，
+而 `EbookToolbox.spec`、Windows 版本信息和图标源资源需要纳入版本控制。
 
-当前版本只建立可扩展的 GUI 基础架构。旧脚本迁移、EPUB 读写、批处理和后台任务框架
-将在后续阶段逐步实现；应用不会在现阶段修改任何电子书文件。
+## 使用 Windows 便携版
 
-## EPUB 图片压缩 core（第一版）
+目标电脑不需要安装 Python、uv、PySide6 或 Pillow。解压
+`EbookToolbox-portable.zip`，保留顶层 `EbookToolbox` 目录中的全部文件，然后双击
+`EbookToolbox.exe`。不要只复制或单独运行 EXE；one-folder 版本需要同目录下的
+`_internal` 运行资源。
 
-仓库现已提供不依赖 Qt 的单本 EPUB 图片压缩 core，位于
-`src/ebook_toolbox/services/epub_image_compressor/`。它处理 JPEG、PNG 和静态 WebP，
-原样保留 GIF，并在遇到多帧 PNG/WebP 时跳过并返回 warning。默认配置跳过封面，
-且不会覆盖源 EPUB 或已有输出。
+“EPUB 综合修复”中的 Calibre 外部检查仍是可选功能。便携版不会捆绑 Calibre；启用该
+选项时，目标电脑需要自行安装 Calibre，并确保对应命令可由应用找到。
+
+当前版本不是安装程序，不需要管理员权限，不包含 Inno Setup、MSIX 或自动更新。
+
+### Windows SmartScreen 提示
+
+当前便携版没有代码签名。首次启动时 Windows SmartScreen 可能显示“Windows 已保护
+你的电脑”。请只运行自己构建或从可信渠道取得的 ZIP；确认来源后，可在提示中选择
+“更多信息”再选择“仍要运行”。此提示不代表构建失败，正式分发时仍应考虑购买并使用
+可信代码签名证书。
+
+## 服务层概览
+
+三个功能页面仅收集参数和展示结构化结果，实际处理位于以下纯 Python 服务中：
+
+```text
+src/ebook_toolbox/services/
+├── epub_image_compressor/    # 单本 EPUB 图片压缩
+├── epub_toc_repair/          # 单本 EPUB 目录修复
+└── epub_structural_repair/   # 单本及顺序批量综合结构修复
+```
+
+服务层不依赖 PySide6，可单独调用和测试。例如：
 
 ```python
 from pathlib import Path
@@ -88,68 +123,39 @@ from ebook_toolbox.services.epub_image_compressor import (
     CompressionRequest,
     compress_epub,
 )
-
-result = compress_epub(
-    CompressionRequest(source=Path("book.epub"), profile=BALANCED)
+from ebook_toolbox.services.epub_structural_repair import (
+    BatchRepairRequest,
+    repair_epub_batch,
 )
-if result.success:
-    print(result.output)
-else:
-    print(result.errors)
-```
-
-当前版本只有同步的纯 Python core 和自动化测试，尚未接入 PySide6 页面、后台任务、
-批处理或 CLI。调用方应检查 `result.success`、`result.errors` 和 `result.warnings`。
-
-## EPUB 目录修复 core（第一版）
-
-仓库现已提供不依赖 PySide6 的单本 EPUB 目录修复 core，位于
-`src/ebook_toolbox/services/epub_toc_repair/`。它可根据书脊正文标题识别中文及常见英文
-卷章结构，重建 EPUB2 NCX、EPUB3 `nav.xhtml`，并在目录文档缺失时补齐必要的 OPF
-manifest/spine 引用。默认不覆盖输入或已有输出，默认输出名为
-`<原文件名>_toc_fixed.epub`。
-
-```python
-from pathlib import Path
-
 from ebook_toolbox.services.epub_toc_repair import (
     TocRepairRequest,
     repair_epub_toc,
 )
 
-result = repair_epub_toc(TocRepairRequest(source=Path("collection.epub")))
-if result.success:
-    print(result.output)
-else:
-    print(result.errors)
-```
-
-`replace_existing=False` 可保留已有且目标有效的格式主目录。目录修复 core 已接入
-“EPUB 目录修复”页面，并通过后台线程池执行；当前尚未提供 CLI 或批处理。
-
-## EPUB 综合结构修复 core（第一版）
-
-仓库现已提供不依赖 PySide6 的 EPUB 综合结构修复服务，位于
-`src/ebook_toolbox/services/epub_structural_repair/`。它包含单本修复和顺序批量调度 API，
-可修复 Windows 无法表达的内部路径及其已知引用、OPF manifest/spine 悬空项和缺失的
-`dc:language`。调用者显式提供参考 EPUB 时，还可按完全一致的 manifest 路径补回缺失
-资源。默认生成 `<原文件名>_repaired.epub`，不会覆盖源文件或已有输出。
-
-```python
-from pathlib import Path
-
-from ebook_toolbox.services.epub_structural_repair import (
-    BatchRepairRequest,
-    RepairRequest,
-    repair_epub_batch,
-    repair_epub_structure,
+compressed = compress_epub(
+    CompressionRequest(source=Path("book.epub"), profile=BALANCED)
 )
-
-single = repair_epub_structure(RepairRequest(source=Path("book.epub")))
-batch = repair_epub_batch(
+toc_fixed = repair_epub_toc(TocRepairRequest(source=Path("collection.epub")))
+repaired = repair_epub_batch(
     BatchRepairRequest(inputs=(Path("library"),), recursive=True)
 )
 ```
 
-本轮仅提供纯 Python core 和自动化测试，尚未接入 GUI。该服务不执行图片压缩、广告
-清理、章节改名或目录重建；图片优化和目录修复仍由各自的独立服务负责。
+调用方应始终检查结果的 `success`、`errors` 和 `warnings`，不要仅根据输出路径判断成功。
+
+## 项目结构
+
+```text
+main.py                              # 源码启动入口
+EbookToolbox.spec                    # PyInstaller one-folder 配置
+packaging/windows_version_info.txt   # Windows EXE 版本资源
+scripts/build_windows.ps1            # 完整便携版构建脚本
+src/ebook_toolbox/
+├── app.py                           # QApplication、主题和程序入口
+├── resources/                       # 项目自有应用图标
+├── services/                        # 三个纯 Python EPUB 服务
+└── ui/                              # 主窗口、导航和正式功能页面
+tests/                               # core 与 pytest-qt 自动化测试
+```
+
+`migration_sources/` 仅作为旧脚本迁移参考，不会包含在便携版发布产物中。
