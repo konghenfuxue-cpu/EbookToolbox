@@ -19,6 +19,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ebook_toolbox.services.text_chapter import (
+    TextChapterFileResult,
+    TextChapterRequest,
+    normalize_text_file,
+)
 from ebook_toolbox.services.text_merge import TextMergeRequest, TextMergeResult, merge_author_texts
 
 
@@ -41,6 +46,20 @@ class _TextMergeWorker(QRunnable):
             self.signals.failed.emit(f"{type(exc).__name__}: {exc}")
 
 
+class _TextChapterWorker(QRunnable):
+    def __init__(self, request: TextChapterRequest) -> None:
+        super().__init__()
+        self._request = request
+        self.signals = _WorkerSignals()
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            self.signals.finished.emit(normalize_text_file(self._request))
+        except Exception as exc:  # pragma: no cover - retained as GUI safety net
+            self.signals.failed.emit(f"{type(exc).__name__}: {exc}")
+
+
 def _format_issue(issue: object) -> str:
     code = getattr(issue, "code", "unknown")
     message = getattr(issue, "message", str(issue))
@@ -52,12 +71,14 @@ class TextMergePage(QWidget):
     """Collect a source folder and publish per-author formatted TXT compilations."""
 
     merge_finished = Signal(object)
+    chapter_finished = Signal(object)
 
     def __init__(self, thread_pool: QThreadPool | None = None) -> None:
         super().__init__()
         self.setObjectName("textMergePage")
         self._thread_pool = thread_pool or QThreadPool.globalInstance()
         self._worker: _TextMergeWorker | None = None
+        self._chapter_worker: _TextChapterWorker | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(32, 24, 32, 24)
@@ -115,8 +136,44 @@ class TextMergePage(QWidget):
         self.result_summary = QPlainTextEdit()
         self.result_summary.setObjectName("textMergeResultSummary")
         self.result_summary.setReadOnly(True)
+        self.result_summary.setMaximumHeight(140)
         self.result_summary.setPlaceholderText("合并结果、跳过项、警告和错误将在这里显示。")
-        layout.addWidget(self.result_summary, 1)
+        layout.addWidget(self.result_summary)
+
+        chapter_title = QLabel("TXT 卷章识别与规范化")
+        chapter_title.setStyleSheet("font-size: 18px; font-weight: 600;")
+        layout.addWidget(chapter_title)
+        chapter_description = QLabel(
+            "识别标准卷、章/回/节及序章等标题，生成独立的“（卷章版）”副本。"
+            "无法确定的正文不会被当成标题；原文件不会被修改。"
+        )
+        chapter_description.setWordWrap(True)
+        layout.addWidget(chapter_description)
+        chapter_form = QFormLayout()
+        self.chapter_source_edit = QLineEdit()
+        self.chapter_source_edit.setObjectName("textChapterSourceFile")
+        chapter_source_button = QPushButton("浏览…")
+        chapter_source_button.clicked.connect(self._choose_chapter_source)
+        chapter_source_row = QHBoxLayout()
+        chapter_source_row.addWidget(self.chapter_source_edit, 1)
+        chapter_source_row.addWidget(chapter_source_button)
+        chapter_form.addRow("输入 TXT", chapter_source_row)
+        self.chapter_output_edit = QLineEdit()
+        self.chapter_output_edit.setObjectName("textChapterOutputFile")
+        self.chapter_output_edit.setPlaceholderText("留空时输出为同目录的（卷章版）副本")
+        chapter_form.addRow("输出 TXT", self.chapter_output_edit)
+        layout.addLayout(chapter_form)
+        self.chapter_overwrite_check = QCheckBox("允许覆盖已有卷章版文件")
+        layout.addWidget(self.chapter_overwrite_check)
+        self.chapter_start_button = QPushButton("开始卷章识别")
+        self.chapter_start_button.setObjectName("startTextChapterButton")
+        self.chapter_start_button.clicked.connect(self.start_chapter_normalization)
+        layout.addWidget(self.chapter_start_button)
+        self.chapter_summary = QPlainTextEdit()
+        self.chapter_summary.setObjectName("textChapterResultSummary")
+        self.chapter_summary.setReadOnly(True)
+        self.chapter_summary.setMaximumHeight(140)
+        layout.addWidget(self.chapter_summary)
 
     def build_request(self) -> TextMergeRequest:
         source = self.source_edit.text().strip()
@@ -170,6 +227,61 @@ class TextMergePage(QWidget):
         else:
             self.progress_bar.setRange(0, 1)
             self.progress_bar.setValue(1)
+
+    @Slot()
+    def _choose_chapter_source(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "选择 TXT 文件", "", "TXT 文件 (*.txt)")
+        if path:
+            self.chapter_source_edit.setText(path)
+
+    @Slot()
+    def start_chapter_normalization(self) -> None:
+        if self._chapter_worker is not None:
+            return
+        source = self.chapter_source_edit.text().strip()
+        if not source:
+            self.chapter_summary.setPlainText("[input_error] 请选择输入 TXT 文件")
+            return
+        output = self.chapter_output_edit.text().strip()
+        self.chapter_start_button.setEnabled(False)
+        self.chapter_summary.setPlainText("正在识别卷章标题，请稍候…")
+        self._chapter_worker = _TextChapterWorker(
+            TextChapterRequest(
+                Path(source),
+                Path(output) if output else None,
+                self.chapter_overwrite_check.isChecked(),
+            )
+        )
+        self._chapter_worker.signals.finished.connect(self._handle_chapter_result)
+        self._chapter_worker.signals.failed.connect(self._handle_chapter_failure)
+        self._thread_pool.start(self._chapter_worker)
+
+    @Slot(object)
+    def _handle_chapter_result(self, result: TextChapterFileResult) -> None:
+        self._chapter_worker = None
+        self.chapter_start_button.setEnabled(True)
+        normalized = result.normalized
+        lines = [f"输出：{result.output}"]
+        if normalized is not None:
+            lines.extend(
+                (
+                    f"识别卷：{normalized.volume_count}",
+                    f"识别章节：{normalized.chapter_count}",
+                    f"特殊标题：{normalized.special_heading_count}",
+                )
+            )
+        if result.warnings:
+            lines.extend(("", "警告：", *(_format_issue(item) for item in result.warnings)))
+        if result.errors:
+            lines.extend(("", "错误：", *(_format_issue(item) for item in result.errors)))
+        self.chapter_summary.setPlainText("\n".join(lines))
+        self.chapter_finished.emit(result)
+
+    @Slot(str)
+    def _handle_chapter_failure(self, message: str) -> None:
+        self._chapter_worker = None
+        self.chapter_start_button.setEnabled(True)
+        self.chapter_summary.setPlainText(f"[unexpected_error] {message}")
 
     @Slot(object)
     def _handle_result(self, result: TextMergeResult) -> None:

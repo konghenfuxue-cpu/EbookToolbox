@@ -33,3 +33,17 @@ def test_result_renders_summary_and_issues(qtbot, tmp_path: Path) -> None:
     assert "合并 TXT：1 个" in summary
     assert "[unmatched_file_name]" in summary
     assert (source / "EbookToolbox-合集" / "甲合集.txt").is_file()
+
+
+def test_chapter_result_writes_copy_and_renders_counts(qtbot, tmp_path: Path) -> None:
+    source = tmp_path / "小说.txt"
+    source.write_text("第一卷 开始\n第1章 标题", encoding="utf-8")
+    page = TextMergePage()
+    qtbot.addWidget(page)
+    page.chapter_source_edit.setText(str(source))
+
+    with qtbot.waitSignal(page.chapter_finished, timeout=5_000):
+        page.start_chapter_normalization()
+
+    assert "识别卷：1" in page.chapter_summary.toPlainText()
+    assert (tmp_path / "小说（卷章版）.txt").is_file()
