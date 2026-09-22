@@ -641,6 +641,10 @@ def _repair_package(
     opf_path: Path,
     replace_existing: bool,
 ) -> tuple[list[TocEntry], list[Path], list[TocRepairWarning]]:
+    # ``safe_extract`` returns resolved member paths. Normalize the root too so
+    # every later ``relative_to`` comparison uses the same Windows path form.
+    extracted_root = extracted_root.resolve()
+    opf_path = opf_path.resolve()
     opf_root, opf_repaired = _parse_opf(opf_path)
     warnings: list[TocRepairWarning] = []
     modified: list[Path] = []
@@ -847,7 +851,7 @@ def repair_epub_toc(request: TocRepairRequest) -> TocRepairResult:
             )
 
         with tempfile.TemporaryDirectory(prefix="ebook_toolbox_toc_") as directory:
-            root = Path(directory) / "unpacked"
+            root = Path(directory).resolve() / "unpacked"
             root.mkdir()
             opf_paths = safe_extract(source, root)
             if len(opf_paths) != 1:
