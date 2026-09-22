@@ -16,6 +16,7 @@ from ebook_toolbox.ui.pages import (
     PlaceholderPage,
     ReportEntry,
     ReportStore,
+    TextMergePage,
     WelcomePage,
 )
 
@@ -56,6 +57,10 @@ class MainWindow(QMainWindow):
                     self._record_structural_repair
                 )
                 self.pages.addWidget(self.epub_structural_repair_page)
+            elif title == "TXT 工具":
+                self.text_merge_page = TextMergePage()
+                self.text_merge_page.merge_finished.connect(self._record_text_merge)
+                self.pages.addWidget(self.text_merge_page)
             elif title == "检测报告":
                 self.detection_report_page = DetectionReportPage(self.report_store)
                 self.pages.addWidget(self.detection_report_page)
@@ -140,3 +145,13 @@ class MainWindow(QMainWindow):
                 warnings=warnings,
                 errors=errors,
             )
+
+    def _record_text_merge(self, result: object) -> None:
+        self._add_report(
+            tool="TXT 排版并合并",
+            source=getattr(result, "source_directory", ""),
+            output=getattr(result, "output_directory", None),
+            success=bool(getattr(result, "success", False)),
+            warnings=getattr(result, "warnings", ()),
+            errors=getattr(result, "errors", ()),
+        )

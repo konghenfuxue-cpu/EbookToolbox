@@ -5,6 +5,7 @@ from ebook_toolbox.ui.pages.epub_image_compressor import EpubImageCompressorPage
 from ebook_toolbox.ui.pages.epub_structural_repair import EpubStructuralRepairPage
 from ebook_toolbox.ui.pages.epub_toc_repair import EpubTocRepairPage
 from ebook_toolbox.ui.pages.placeholder import PlaceholderPage
+from ebook_toolbox.ui.pages.text_merge import TextMergePage
 from ebook_toolbox.ui.pages.welcome import WelcomePage
 
 __all__ = [
@@ -15,5 +16,6 @@ __all__ = [
     "PlaceholderPage",
     "ReportEntry",
     "ReportStore",
+    "TextMergePage",
     "WelcomePage",
 ]

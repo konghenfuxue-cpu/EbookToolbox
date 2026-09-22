@@ -9,6 +9,7 @@ from ebook_toolbox.ui.pages.detection_report import DetectionReportPage
 from ebook_toolbox.ui.pages.epub_image_compressor import EpubImageCompressorPage
 from ebook_toolbox.ui.pages.epub_structural_repair import EpubStructuralRepairPage
 from ebook_toolbox.ui.pages.epub_toc_repair import EpubTocRepairPage
+from ebook_toolbox.ui.pages.text_merge import TextMergePage
 
 
 def test_main_window_starts(qtbot) -> None:
@@ -30,6 +31,9 @@ def test_main_window_starts(qtbot) -> None:
     assert NAVIGATION_ITEMS[3] == "EPUB 综合修复"
     assert isinstance(window.pages.widget(3), EpubStructuralRepairPage)
     assert window.epub_structural_repair_page is window.pages.widget(3)
+    assert NAVIGATION_ITEMS[4] == "TXT 工具"
+    assert isinstance(window.pages.widget(4), TextMergePage)
+    assert window.text_merge_page is window.pages.widget(4)
     assert NAVIGATION_ITEMS[6] == "检测报告"
     assert isinstance(window.pages.widget(6), DetectionReportPage)
     assert window.detection_report_page is window.pages.widget(6)
