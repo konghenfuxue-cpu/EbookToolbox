@@ -36,3 +36,15 @@ def main() -> int:
     window = MainWindow()
     window.show()
     return application.exec()
+
+
+def packaged_self_test() -> int:
+    """Initialize the packaged Qt application and main window, then exit cleanly."""
+
+    application = create_application(["EbookToolbox", "--self-test"])
+    window = MainWindow()
+    window.show()
+    application.processEvents()
+    window.close()
+    application.processEvents()
+    return 0

@@ -50,6 +50,15 @@ analysis = Analysis(
     optimize=0,
 )
 
+# The desktop host can add unrelated Poppler/ICU directories to PATH. PyInstaller's
+# dependency scanner may then collect those optional ICU DLLs for Qt6Core, even though
+# the PySide6 wheel does not ship or require them. The mismatched DLLs make QtGui fail
+# with WinError 127. Keep the portable build independent from the host PATH.
+forbidden_host_binaries = {"icuuc.dll", "icudt78.dll"}
+analysis.binaries = [
+    item for item in analysis.binaries if Path(item[0]).name.casefold() not in forbidden_host_binaries
+]
+
 pyz = PYZ(analysis.pure)
 
 executable = EXE(

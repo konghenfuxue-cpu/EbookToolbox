@@ -72,8 +72,9 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 2. 执行 `uv sync --dev`、Ruff 和完整 pytest；
 3. 只清理本项目明确的 PyInstaller 工作目录及便携版输出；
 4. 使用 `EbookToolbox.spec` 构建 `EbookToolbox.exe`；
-5. 检查 Qt Windows/图像插件、qt-material 主题与字体、Pillow 原生扩展和应用图标；
-6. 将整个 `EbookToolbox` 目录压缩为便携版 ZIP，并打印实际大小。
+5. 验证 one-folder 的 `_internal` 运行资源（含 QtGui），并运行 EXE 的打包自检；
+6. 检查 Qt Windows/图像插件、qt-material 主题与字体、Pillow 原生扩展和应用图标；
+7. 将整个 `EbookToolbox` 目录压缩为便携版 ZIP，并打印实际大小。
 
 构建输出为：
 
