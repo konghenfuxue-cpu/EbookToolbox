@@ -2,8 +2,10 @@
 
 from PySide6.QtCore import Qt
 
+from ebook_toolbox.services.epub_image_compressor import CompressionResult
 from ebook_toolbox.ui.main_window import MainWindow
 from ebook_toolbox.ui.navigation import NAVIGATION_ITEMS
+from ebook_toolbox.ui.pages.detection_report import DetectionReportPage
 from ebook_toolbox.ui.pages.epub_image_compressor import EpubImageCompressorPage
 from ebook_toolbox.ui.pages.epub_structural_repair import EpubStructuralRepairPage
 from ebook_toolbox.ui.pages.epub_toc_repair import EpubTocRepairPage
@@ -28,6 +30,9 @@ def test_main_window_starts(qtbot) -> None:
     assert NAVIGATION_ITEMS[3] == "EPUB 综合修复"
     assert isinstance(window.pages.widget(3), EpubStructuralRepairPage)
     assert window.epub_structural_repair_page is window.pages.widget(3)
+    assert NAVIGATION_ITEMS[6] == "检测报告"
+    assert isinstance(window.pages.widget(6), DetectionReportPage)
+    assert window.detection_report_page is window.pages.widget(6)
 
 
 def test_navigation_switches_page(qtbot) -> None:
@@ -43,3 +48,18 @@ def test_navigation_switches_page(qtbot) -> None:
 
     assert window.navigation.currentRow() == target_row
     assert window.pages.currentIndex() == target_row
+
+
+def test_completed_task_is_added_to_detection_reports(qtbot, tmp_path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    result = CompressionResult(
+        source=tmp_path / "source.epub",
+        output=tmp_path / "source_optimized.epub",
+        success=True,
+    )
+
+    window.epub_image_compressor_page.compression_finished.emit(result)
+
+    assert window.detection_report_page.report_table.rowCount() == 1
+    assert window.detection_report_page.report_table.item(0, 1).text() == "EPUB 图片压缩"
