@@ -174,21 +174,19 @@ def _build_repaired_epub(
     mapping: dict[str, str],
     package_paths: list[str],
     result: RepairResult,
+    wrap_image_spine: bool,
 ) -> None:
     available = set(mapping.values())
+    generated_resources: dict[str, bytes] = {}
     providers: dict[str, tuple[zipfile.ZipFile, zipfile.ZipInfo]] = {
         info.filename: (source_archive, info) for info in source_infos
     }
     if reference_archive is not None:
-        providers.update(
-            {info.filename: (reference_archive, info) for info in reference_infos}
-        )
+        providers.update({info.filename: (reference_archive, info) for info in reference_infos})
     temporary_file.seek(0)
     temporary_file.truncate(0)
     with zipfile.ZipFile(temporary_file, "w", allowZip64=True) as output_archive:
-        output_archive.writestr(
-            "mimetype", MIMETYPE_CONTENT, compress_type=zipfile.ZIP_STORED
-        )
+        output_archive.writestr("mimetype", MIMETYPE_CONTENT, compress_type=zipfile.ZIP_STORED)
         ordered = sorted(
             (old for old in providers if old != "mimetype"),
             key=lambda old: (mapping[old].casefold(), mapping[old]),
@@ -200,13 +198,18 @@ def _build_repaired_epub(
             if PurePosixPath(old).suffix.casefold() in TEXT_EXTENSIONS:
                 data = rewrite_text(data, old, new, mapping)
             if old in package_paths:
-                changes = repair_package(data, new, available)
+                changes = repair_package(data, new, available, wrap_image_spine=wrap_image_spine)
                 data = changes.data
                 result.added_manifest_resources.extend(changes.added_resources)
                 result.removed_manifest_items.extend(changes.removed_manifest_items)
                 result.removed_spine_items.extend(changes.removed_spine_items)
+                result.detected_image_spine_items.extend(changes.detected_image_spine_items)
+                result.wrapped_image_spine_items.extend(changes.wrapped_image_spine_items)
+                generated_resources.update(changes.generated_resources)
                 result.language_added = result.language_added or changes.language_added
             output_archive.writestr(_copy_info(info, new), data)
+        for target, data in sorted(generated_resources.items()):
+            output_archive.writestr(target, data, compress_type=zipfile.ZIP_DEFLATED)
     temporary_file.flush()
     os.fsync(temporary_file.fileno())
 
@@ -251,9 +254,7 @@ def repair_epub_structure(request: RepairRequest) -> RepairResult:
                 combined_infos = [*source_infos, *reference_infos]
                 mapping = build_name_map(combined_infos)
                 result.renamed_resources.extend(
-                    RenamedResource(old, new)
-                    for old, new in mapping.items()
-                    if old != new
+                    RenamedResource(old, new) for old, new in mapping.items() if old != new
                 )
                 result.restored_resources.extend(restored)
                 temporary_file = tempfile.NamedTemporaryFile(
@@ -277,6 +278,7 @@ def repair_epub_structure(request: RepairRequest) -> RepairResult:
                             mapping,
                             package_paths,
                             result,
+                            request.wrap_image_spine,
                         )
                         ensure_owned_temporary(temporary_output, temporary_identity)
                         stats = validate_repaired_epub(temporary_file)
@@ -323,6 +325,25 @@ def repair_epub_structure(request: RepairRequest) -> RepairResult:
                     f"Removed {len(result.removed_spine_items)} invalid spine items",
                 )
             )
+        if result.detected_image_spine_items:
+            if result.wrapped_image_spine_items:
+                result.warnings.append(
+                    RepairWarning(
+                        "image_spine_wrapped",
+                        "Wrapped "
+                        f"{len(result.wrapped_image_spine_items)} direct image spine items "
+                        "in generated XHTML documents",
+                    )
+                )
+            else:
+                result.warnings.append(
+                    RepairWarning(
+                        "image_spine_detected",
+                        "Detected "
+                        f"{len(result.detected_image_spine_items)} direct image spine items; "
+                        "enable XHTML wrapping to repair them",
+                    )
+                )
         result.success = True
     except _RepairFailure as exc:
         result.errors.append(RepairError(exc.code, str(exc), exc.path))

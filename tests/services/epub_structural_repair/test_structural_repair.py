@@ -48,23 +48,21 @@ def make_epub(
         spine_xml = "".join(
             f'<itemref idref="{item_id}"/>' for item_id in (spine_ids or ["chapter"])
         )
-        opf_data = f'''<?xml version="1.0" encoding="utf-8"?>
+        opf_data = f"""<?xml version="1.0" encoding="utf-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:title>测试书</dc:title>{language_xml}
   </metadata>
   <manifest>{manifest_xml}</manifest>
   <spine>{spine_xml}</spine>
-</package>'''
+</package>"""
     if container_data is None:
         container_data = f'''<?xml version="1.0"?>
 <container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">
   <rootfiles><rootfile full-path="{opf_path}"/></rootfiles>
 </container>'''
     with zipfile.ZipFile(path, "w") as archive:
-        archive.writestr(
-            "mimetype", b"application/epub+zip", compress_type=zipfile.ZIP_STORED
-        )
+        archive.writestr("mimetype", b"application/epub+zip", compress_type=zipfile.ZIP_STORED)
         archive.writestr("META-INF/container.xml", container_data)
         archive.writestr(opf_path, opf_data)
         archive.writestr(chapter_path, chapter_data)
@@ -76,19 +74,68 @@ def read_opf(path: Path) -> tuple[zipfile.ZipFile, ET.Element, str]:
     archive = zipfile.ZipFile(path)
     container = ET.fromstring(archive.read("META-INF/container.xml"))
     opf_path = next(
-        node.get("full-path", "")
-        for node in container.iter()
-        if local(node.tag) == "rootfile"
+        node.get("full-path", "") for node in container.iter() if local(node.tag) == "rootfile"
     )
     return archive, ET.fromstring(archive.read(unquote(opf_path))), unquote(opf_path)
 
 
 def manifest_by_id(root: ET.Element) -> dict[str, ET.Element]:
-    return {
-        item.get("id", ""): item
-        for item in root.iter()
-        if local(item.tag) == "item"
-    }
+    return {item.get("id", ""): item for item in root.iter() if local(item.tag) == "item"}
+
+
+def test_direct_image_spine_is_detected_without_modifying_it(tmp_path: Path) -> None:
+    source = tmp_path / "image-spine.epub"
+    image = "OEBPS/Images/page-1.bin"
+    make_epub(
+        source,
+        extra_members={image: b"jpeg bytes"},
+        extra_manifest=[("page-image", "Images/page-1.bin", "image/jpeg")],
+        spine_ids=["page-image"],
+    )
+
+    result = repair_epub_structure(RepairRequest(source))
+
+    assert result.success
+    assert result.detected_image_spine_items == [image]
+    assert result.wrapped_image_spine_items == []
+    assert "image_spine_detected" in {warning.code for warning in result.warnings}
+    archive, root, _opf_path = read_opf(result.output)
+    with archive:
+        assert archive.read(image) == b"jpeg bytes"
+        assert [node.get("idref") for node in root.iter() if local(node.tag) == "itemref"] == [
+            "page-image"
+        ]
+
+
+def test_direct_image_spine_can_be_wrapped_in_generated_xhtml(tmp_path: Path) -> None:
+    source = tmp_path / "wrapped-image-spine.epub"
+    image = "OEBPS/Images/page 1.jpg"
+    make_epub(
+        source,
+        extra_members={image: b"jpeg bytes"},
+        extra_manifest=[("page-image", "Images/page%201.jpg", "image/jpeg")],
+        spine_ids=["page-image"],
+    )
+
+    result = repair_epub_structure(RepairRequest(source, wrap_image_spine=True))
+
+    assert result.success
+    assert result.detected_image_spine_items == [image]
+    assert result.wrapped_image_spine_items == [image]
+    assert "image_spine_wrapped" in {warning.code for warning in result.warnings}
+    archive, root, opf_path = read_opf(result.output)
+    with archive:
+        manifest = manifest_by_id(root)
+        spine_id = next(
+            node.get("idref", "") for node in root.iter() if local(node.tag) == "itemref"
+        )
+        assert spine_id.startswith("repair_image_spine_")
+        wrapper = posixpath.normpath(
+            posixpath.join(posixpath.dirname(opf_path), unquote(manifest[spine_id].get("href", "")))
+        )
+        wrapper_data = archive.read(wrapper).decode("utf-8")
+        assert "../Images/page%201.jpg" in wrapper_data
+        assert archive.read(image) == b"jpeg bytes"
 
 
 def test_legal_epub_needs_no_rename_and_preserves_member_payloads(tmp_path: Path) -> None:
@@ -197,8 +244,7 @@ def test_ncx_svg_and_smil_references_are_rewritten(tmp_path: Path) -> None:
                 "<content src='Text/ch:one.xhtml?view=1#start'/></navPoint></navMap></ncx>"
             ),
             svg: (
-                "<svg xmlns='http://www.w3.org/2000/svg'>"
-                "<image href='pic*one.png#layer'/></svg>"
+                "<svg xmlns='http://www.w3.org/2000/svg'><image href='pic*one.png#layer'/></svg>"
             ),
             smil: (
                 "<smil><body><par><text src='../Text/ch:one.xhtml#p1'/>"
@@ -311,9 +357,9 @@ def test_missing_manifest_target_and_invalid_spine_item_are_removed(tmp_path: Pa
     archive, root, _opf_path = read_opf(result.output)
     with archive:
         assert "missing" not in manifest_by_id(root)
-        assert [
-            node.get("idref") for node in root.iter() if local(node.tag) == "itemref"
-        ] == ["chapter"]
+        assert [node.get("idref") for node in root.iter() if local(node.tag) == "itemref"] == [
+            "chapter"
+        ]
 
 
 def test_legal_chinese_paths_and_names_are_preserved(tmp_path: Path) -> None:
@@ -481,9 +527,7 @@ def test_illegal_opf_path_is_renamed_and_container_reference_is_updated(tmp_path
     with zipfile.ZipFile(result.output) as archive:
         container = ET.fromstring(archive.read("META-INF/container.xml"))
         new_opf = next(
-            node.get("full-path", "")
-            for node in container.iter()
-            if local(node.tag) == "rootfile"
+            node.get("full-path", "") for node in container.iter() if local(node.tag) == "rootfile"
         )
         assert unquote(new_opf) == renamed[old_opf]
         assert renamed[old_opf] in archive.namelist()
