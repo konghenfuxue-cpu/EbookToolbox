@@ -74,6 +74,17 @@ class CompressionRequest:
     overwrite: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class CompressionProgress:
+    total: int
+    completed: int
+    replaced: int
+    skipped: int
+    failed: int
+    current_image: Path | None = None
+    stage: str = "images"
+
+
 @dataclass(slots=True)
 class CompressionResult:
     source: Path
@@ -84,6 +95,9 @@ class CompressionResult:
     images: list[ImageResult] = field(default_factory=list)
     warnings: list[CompressionWarning] = field(default_factory=list)
     errors: list[CompressionError] = field(default_factory=list)
+    planned_count: int = 0
+    processed_count: int = 0
+    cancelled: bool = False
 
     @property
     def replaced_count(self) -> int:
@@ -96,6 +110,10 @@ class CompressionResult:
     @property
     def failed_count(self) -> int:
         return sum(item.status is ImageStatus.FAILED for item in self.images)
+
+    @property
+    def cancelled_count(self) -> int:
+        return max(0, self.planned_count - self.processed_count) if self.cancelled else 0
 
     @property
     def saved_bytes(self) -> int:

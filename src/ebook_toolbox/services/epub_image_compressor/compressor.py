@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 from .archive import (
@@ -19,11 +20,16 @@ from .covers import find_cover_paths
 from .images import PASSTHROUGH_EXTENSIONS, SUPPORTED_EXTENSIONS, encode_candidate
 from .models import (
     CompressionError,
+    CompressionProgress,
     CompressionRequest,
     CompressionResult,
     ImageResult,
     ImageStatus,
 )
+
+
+class _CompressionCancelled(Exception):
+    pass
 
 
 def _default_output(source: Path) -> Path:
@@ -43,7 +49,12 @@ def _paths_refer_to_same_file(source: Path, output: Path) -> bool:
         return source_identity == output_identity
 
 
-def compress_epub(request: CompressionRequest) -> CompressionResult:
+def compress_epub(
+    request: CompressionRequest,
+    *,
+    progress_callback: Callable[[CompressionProgress], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
+) -> CompressionResult:
     """Compress supported images in one EPUB and return a structured result.
 
     Fatal errors are captured in ``result.errors``. The input is never written to.
@@ -74,15 +85,41 @@ def compress_epub(request: CompressionRequest) -> CompressionResult:
             covers, cover_warnings = find_cover_paths(root, opf_paths)
             result.warnings.extend(cover_warnings)
 
-            for image in sorted(root.rglob("*")):
-                if not image.is_file():
-                    continue
-                extension = image.suffix.lower()
+            candidates = [
+                image
+                for image in sorted(root.rglob("*"))
+                if image.is_file()
+                and image.suffix.lower() not in PASSTHROUGH_EXTENSIONS
+                and image.suffix.lower() in SUPPORTED_EXTENSIONS
+            ]
+            result.planned_count = len(candidates)
+
+            def report(
+                current_image: Path | None = None, stage: str = "images"
+            ) -> None:
+                result.processed_count = len(result.images)
+                if progress_callback is not None:
+                    progress_callback(
+                        CompressionProgress(
+                            result.planned_count,
+                            result.processed_count,
+                            result.replaced_count,
+                            result.skipped_count,
+                            result.failed_count,
+                            current_image,
+                            stage,
+                        )
+                    )
+
+            def check_cancelled() -> None:
+                if should_cancel is not None and should_cancel():
+                    raise _CompressionCancelled
+
+            report()
+            for image in candidates:
+                check_cancelled()
                 relative_path = image.relative_to(root)
-                if extension in PASSTHROUGH_EXTENSIONS:
-                    continue
-                if extension not in SUPPORTED_EXTENSIONS:
-                    continue
+                report(relative_path)
                 if not request.include_cover and image.resolve() in covers:
                     result.images.append(
                         ImageResult(
@@ -92,6 +129,7 @@ def compress_epub(request: CompressionRequest) -> CompressionResult:
                             reason="cover",
                         )
                     )
+                    report()
                     continue
                 encoded = encode_candidate(image, request.profile, display_path=relative_path)
                 result.images.append(encoded.result)
@@ -100,7 +138,10 @@ def compress_epub(request: CompressionRequest) -> CompressionResult:
                     result.errors.append(encoded.result.error)
                 if encoded.data is not None:
                     image.write_bytes(encoded.data)
+                report()
 
+            check_cancelled()
+            report(stage="building")
             temporary_file = tempfile.NamedTemporaryFile(
                 prefix=f".{output.name}.", suffix=".tmp", dir=output.parent, delete=False
             )
@@ -112,9 +153,13 @@ def compress_epub(request: CompressionRequest) -> CompressionResult:
                     ensure_owned_temporary(temporary_output, temporary_identity)
                     build_epub(root, temporary_file)
                     ensure_owned_temporary(temporary_output, temporary_identity)
+                    check_cancelled()
+                    report(stage="validating")
                     validate_output(temporary_file)
                     ensure_owned_temporary(temporary_output, temporary_identity)
                 ensure_owned_temporary(temporary_output, temporary_identity)
+                check_cancelled()
+                report(stage="publishing")
                 publish_epub(
                     temporary_output,
                     output,
@@ -128,6 +173,8 @@ def compress_epub(request: CompressionRequest) -> CompressionResult:
                     unlink_owned_temporary(temporary_output, temporary_identity)
         result.output_bytes = output.stat().st_size
         result.success = True
+    except _CompressionCancelled:
+        result.cancelled = True
     except (ArchiveError, FileExistsError, OSError, ValueError) as exc:
         result.errors.append(CompressionError(type(exc).__name__, str(exc)))
     # Core boundary: return unexpected failures without publishing partial output.
