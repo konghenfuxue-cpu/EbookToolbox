@@ -2,6 +2,7 @@
 
 from .batch import repair_epub_batch
 from .models import (
+    BatchRepairProgress,
     BatchRepairRequest,
     BatchRepairResult,
     FileRepairResult,
@@ -15,6 +16,7 @@ from .repair import repair_epub_structure
 
 __all__ = [
     "BatchRepairRequest",
+    "BatchRepairProgress",
     "BatchRepairResult",
     "FileRepairResult",
     "RenamedResource",

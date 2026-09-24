@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import os
 from collections import defaultdict
+from collections.abc import Callable
 from pathlib import Path
 
 from .models import (
+    BatchRepairProgress,
     BatchRepairRequest,
     BatchRepairResult,
     FileRepairResult,
@@ -68,7 +70,12 @@ def _failed_result(source: Path, output: Path, code: str, message: str) -> FileR
     return FileRepairResult(source, output, repair)
 
 
-def repair_epub_batch(request: BatchRepairRequest) -> BatchRepairResult:
+def repair_epub_batch(
+    request: BatchRepairRequest,
+    *,
+    progress_callback: Callable[[BatchRepairProgress], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
+) -> BatchRepairResult:
     """Repair discovered EPUBs sequentially; one failure never stops later files."""
 
     result = BatchRepairResult()
@@ -90,6 +97,9 @@ def repair_epub_batch(request: BatchRepairRequest) -> BatchRepairResult:
     planned: list[tuple[Path, Path]] = [
         (source, default_output_path(source, output_directory)) for source in sources
     ]
+    result.planned_count = len(planned)
+    if progress_callback is not None:
+        progress_callback(BatchRepairProgress(len(planned), 0, 0, 0))
     by_output: defaultdict[str, list[tuple[Path, Path]]] = defaultdict(list)
     for source, output in planned:
         key = os.path.normcase(os.path.abspath(output)).casefold()
@@ -97,6 +107,19 @@ def repair_epub_batch(request: BatchRepairRequest) -> BatchRepairResult:
     conflicts = {key: values for key, values in by_output.items() if len(values) > 1}
 
     for source, output in planned:
+        if should_cancel is not None and should_cancel():
+            result.cancelled = True
+            break
+        if progress_callback is not None:
+            progress_callback(
+                BatchRepairProgress(
+                    len(planned),
+                    len(result.files),
+                    result.succeeded_count,
+                    result.failed_count,
+                    source,
+                )
+            )
         output_key = os.path.normcase(os.path.abspath(output)).casefold()
         if output_key in conflicts:
             names = ", ".join(str(item[0]) for item in conflicts[output_key])
@@ -108,20 +131,29 @@ def repair_epub_batch(request: BatchRepairRequest) -> BatchRepairResult:
                     f"Multiple inputs map to the same output: {names}",
                 )
             )
-            continue
-        try:
-            repair = repair_epub_structure(
-                RepairRequest(
-                    source=source,
-                    output=output,
-                    overwrite=request.overwrite,
-                    reference=request.reference,
-                    run_calibre_check=request.run_calibre_check,
-                    wrap_image_spine=request.wrap_image_spine,
+        else:
+            try:
+                repair = repair_epub_structure(
+                    RepairRequest(
+                        source=source,
+                        output=output,
+                        overwrite=request.overwrite,
+                        reference=request.reference,
+                        run_calibre_check=request.run_calibre_check,
+                        wrap_image_spine=request.wrap_image_spine,
+                    )
+                )
+            except Exception as exc:
+                repair = RepairResult(source=source, output=output)
+                repair.errors.append(RepairError("unexpected_error", str(exc), source))
+            result.files.append(FileRepairResult(source, output, repair))
+        if progress_callback is not None:
+            progress_callback(
+                BatchRepairProgress(
+                    len(planned),
+                    len(result.files),
+                    result.succeeded_count,
+                    result.failed_count,
                 )
             )
-        except Exception as exc:
-            repair = RepairResult(source=source, output=output)
-            repair.errors.append(RepairError("unexpected_error", str(exc), source))
-        result.files.append(FileRepairResult(source, output, repair))
     return result

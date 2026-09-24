@@ -5,6 +5,7 @@ import zipfile
 from pathlib import Path
 
 from ebook_toolbox.services.epub_structural_repair import (
+    BatchRepairProgress,
     BatchRepairRequest,
     RepairResult,
     repair_epub_batch,
@@ -144,3 +145,67 @@ def test_scheduler_continues_after_service_level_failure(tmp_path: Path, monkeyp
     assert calls == [source.resolve() for source in sources]
     assert [item.success for item in result.files] == [False, True]
     assert result.files[0].errors[0].code == "unexpected_error"
+
+
+def test_progress_reports_discovery_current_file_and_completion(
+    tmp_path: Path, monkeypatch
+) -> None:
+    sources = [tmp_path / "a.epub", tmp_path / "b.epub"]
+    for source in sources:
+        make_epub(source)
+    updates: list[BatchRepairProgress] = []
+
+    def successful_repair(request):
+        return RepairResult(
+            source=request.source,
+            output=request.output or Path("unused"),
+            success=True,
+        )
+
+    monkeypatch.setattr(batch_module, "repair_epub_structure", successful_repair)
+
+    result = repair_epub_batch(
+        BatchRepairRequest(inputs=tuple(sources)), progress_callback=updates.append
+    )
+
+    assert result.planned_count == 2
+    assert [(item.completed, item.current_source) for item in updates] == [
+        (0, None),
+        (0, sources[0].resolve()),
+        (1, None),
+        (1, sources[1].resolve()),
+        (2, None),
+    ]
+    assert updates[-1].succeeded == 2
+    assert updates[-1].failed == 0
+
+
+def test_cancellation_stops_before_next_file_and_preserves_completed_result(
+    tmp_path: Path, monkeypatch
+) -> None:
+    sources = [tmp_path / "a.epub", tmp_path / "b.epub", tmp_path / "c.epub"]
+    for source in sources:
+        make_epub(source)
+    calls: list[Path] = []
+
+    def successful_repair(request):
+        calls.append(request.source)
+        return RepairResult(
+            source=request.source,
+            output=request.output or Path("unused"),
+            success=True,
+        )
+
+    monkeypatch.setattr(batch_module, "repair_epub_structure", successful_repair)
+
+    result = repair_epub_batch(
+        BatchRepairRequest(inputs=tuple(sources)),
+        should_cancel=lambda: len(calls) == 1,
+    )
+
+    assert calls == [sources[0].resolve()]
+    assert result.cancelled
+    assert result.planned_count == 3
+    assert result.cancelled_count == 2
+    assert result.succeeded_count == 1
+    assert not result.success

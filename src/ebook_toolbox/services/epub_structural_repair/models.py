@@ -69,6 +69,15 @@ class BatchRepairRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class BatchRepairProgress:
+    total: int
+    completed: int
+    succeeded: int
+    failed: int
+    current_source: Path | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class FileRepairResult:
     source: Path
     output: Path
@@ -92,6 +101,8 @@ class BatchRepairResult:
     files: list[FileRepairResult] = field(default_factory=list)
     warnings: list[RepairWarning] = field(default_factory=list)
     errors: list[RepairError] = field(default_factory=list)
+    planned_count: int = 0
+    cancelled: bool = False
 
     @property
     def succeeded_count(self) -> int:
@@ -102,5 +113,9 @@ class BatchRepairResult:
         return sum(not item.success for item in self.files)
 
     @property
+    def cancelled_count(self) -> int:
+        return max(0, self.planned_count - len(self.files)) if self.cancelled else 0
+
+    @property
     def success(self) -> bool:
-        return not self.errors and self.failed_count == 0
+        return not self.cancelled and not self.errors and self.failed_count == 0
