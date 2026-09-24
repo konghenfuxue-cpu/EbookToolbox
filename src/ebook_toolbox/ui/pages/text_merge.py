@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from ebook_toolbox.services.text_chapter import (
     TextChapterFileResult,
+    TextChapterProgress,
     TextChapterRequest,
     normalize_text_file,
 )
@@ -153,7 +154,25 @@ class TextMergePage(QWidget):
         self.chapter_start_button = QPushButton("开始卷章识别")
         self.chapter_start_button.setObjectName("startTextChapterButton")
         self.chapter_start_button.clicked.connect(self.start_chapter_normalization)
-        layout.addWidget(self.chapter_start_button)
+        self.chapter_cancel_button = QPushButton("取消")
+        self.chapter_cancel_button.setObjectName("cancelTextChapterButton")
+        self.chapter_cancel_button.setEnabled(False)
+        self.chapter_cancel_button.setToolTip("完成当前安全阶段后停止，不会发布未完成的输出文件。")
+        self.chapter_cancel_button.clicked.connect(self.cancel_chapter_normalization)
+        chapter_actions = QHBoxLayout()
+        chapter_actions.addWidget(self.chapter_start_button)
+        chapter_actions.addWidget(self.chapter_cancel_button)
+        chapter_actions.addStretch(1)
+        layout.addLayout(chapter_actions)
+        self.chapter_progress_bar = QProgressBar()
+        self.chapter_progress_bar.setObjectName("textChapterProgress")
+        self.chapter_progress_bar.setRange(0, 4)
+        self.chapter_progress_bar.setValue(0)
+        self.chapter_progress_bar.setTextVisible(True)
+        layout.addWidget(self.chapter_progress_bar)
+        self.chapter_status_label = QLabel("请选择要识别的 TXT 文件。")
+        self.chapter_status_label.setObjectName("textChapterStatus")
+        layout.addWidget(self.chapter_status_label)
         self.chapter_summary = QPlainTextEdit()
         self.chapter_summary.setObjectName("textChapterResultSummary")
         self.chapter_summary.setReadOnly(True)
@@ -271,25 +290,77 @@ class TextMergePage(QWidget):
             return
         output = self.chapter_output_edit.text().strip()
         self.chapter_start_button.setEnabled(False)
-        self.chapter_summary.setPlainText("正在识别卷章标题，请稍候…")
+        self.chapter_cancel_button.setEnabled(True)
+        self.chapter_progress_bar.setRange(0, 4)
+        self.chapter_progress_bar.setValue(0)
+        self.chapter_status_label.setText("正在识别卷章：准备开始（0/4）")
+        self.chapter_summary.clear()
         request = TextChapterRequest(
             Path(source),
             Path(output) if output else None,
             self.chapter_overwrite_check.isChecked(),
         )
         self._chapter_worker = BackgroundTask(
-            lambda _task: normalize_text_file(request)
+            lambda task: normalize_text_file(
+                request,
+                progress_callback=task.report_progress,
+                should_cancel=task.is_cancel_requested,
+            )
         )
         self._chapter_worker.signals.finished.connect(self._handle_chapter_result)
         self._chapter_worker.signals.failed.connect(self._handle_chapter_failure)
+        self._chapter_worker.signals.progress.connect(self._handle_chapter_progress)
         self._thread_pool.start(self._chapter_worker)
+
+    @Slot()
+    def cancel_chapter_normalization(self) -> None:
+        if self._chapter_worker is None or not self.chapter_cancel_button.isEnabled():
+            return
+        self._chapter_worker.cancel()
+        self.chapter_cancel_button.setEnabled(False)
+        self.chapter_status_label.setText(
+            "正在取消；完成当前安全阶段后停止且不发布输出…"
+        )
+
+    @Slot(object)
+    def _handle_chapter_progress(self, progress: TextChapterProgress) -> None:
+        self.chapter_progress_bar.setRange(0, progress.total)
+        self.chapter_progress_bar.setValue(progress.completed)
+        stage_names = {
+            "reading": "读取 TXT",
+            "normalizing": "识别并规范卷章",
+            "writing": "写入临时文件",
+            "publishing": "原子发布",
+            "completed": "完成",
+        }
+        if progress.stage == "publishing":
+            self.chapter_cancel_button.setEnabled(False)
+        if self.chapter_cancel_button.isEnabled() or progress.stage in {"publishing", "completed"}:
+            stage = stage_names.get(progress.stage, progress.stage)
+            self.chapter_status_label.setText(
+                f"正在识别卷章：{stage}（{progress.completed}/{progress.total}）"
+            )
 
     @Slot(object)
     def _handle_chapter_result(self, result: TextChapterFileResult) -> None:
         self._chapter_worker = None
         self.chapter_start_button.setEnabled(True)
+        self.chapter_cancel_button.setEnabled(False)
+        self.chapter_progress_bar.setRange(0, result.total_stages)
+        self.chapter_progress_bar.setValue(result.completed_stages)
         normalized = result.normalized
-        lines = [f"输出：{result.output}"]
+        lines: list[str] = []
+        if result.cancelled:
+            self.chapter_status_label.setText(
+                "卷章识别已取消；"
+                f"已完成 {result.completed_stages}/{result.total_stages} 个阶段，未发布输出。"
+            )
+            lines.append("操作已安全取消，原文件和已有输出未被修改。")
+        elif result.success:
+            self.chapter_status_label.setText("卷章识别完成。")
+            lines.append(f"输出：{result.output}")
+        else:
+            self.chapter_status_label.setText("卷章识别失败。")
         if normalized is not None:
             lines.extend(
                 (
@@ -309,6 +380,8 @@ class TextMergePage(QWidget):
     def _handle_chapter_failure(self, message: str) -> None:
         self._chapter_worker = None
         self.chapter_start_button.setEnabled(True)
+        self.chapter_cancel_button.setEnabled(False)
+        self.chapter_status_label.setText("卷章识别失败。")
         self.chapter_summary.setPlainText(f"[unexpected_error] {message}")
 
     @Slot(object)
