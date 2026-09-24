@@ -3,6 +3,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 
+from ebook_toolbox.services.text_chapter import TextChapterFileResult, TextChapterProgress
 from ebook_toolbox.services.text_merge import MergedTextFile, TextMergeProgress, TextMergeResult
 from ebook_toolbox.ui.pages import text_merge as page_module
 from ebook_toolbox.ui.pages.text_merge import TextMergePage
@@ -13,6 +14,7 @@ def test_build_request_requires_source_directory(qtbot) -> None:
     qtbot.addWidget(page)
 
     assert not page.cancel_button.isEnabled()
+    assert not page.chapter_cancel_button.isEnabled()
     assert page.merge_summary_label.text() == "总数：0　成功：0　失败：0　跳过：0　取消：0"
 
     try:
@@ -54,7 +56,50 @@ def test_chapter_result_writes_copy_and_renders_counts(qtbot, tmp_path: Path) ->
         page.start_chapter_normalization()
 
     assert "识别卷：1" in page.chapter_summary.toPlainText()
+    assert page.chapter_status_label.text() == "卷章识别完成。"
+    assert page.chapter_progress_bar.value() == 4
     assert (tmp_path / "小说（卷章版）.txt").is_file()
+
+
+def test_chapter_cancel_stops_before_publish_and_renders_stage_count(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "小说.txt"
+    source.write_text("第1章 标题", encoding="utf-8")
+    page = TextMergePage()
+    qtbot.addWidget(page)
+    page.show()
+    page.chapter_source_edit.setText(str(source))
+    safe_stage = threading.Event()
+
+    def cancellable_normalize(request, *, progress_callback, should_cancel):
+        progress_callback(TextChapterProgress("normalizing", 1, 4))
+        safe_stage.set()
+        while not should_cancel():
+            threading.Event().wait(0.01)
+        return TextChapterFileResult(
+            source=request.source,
+            output=tmp_path / "小说（卷章版）.txt",
+            completed_stages=2,
+            cancelled=True,
+        )
+
+    monkeypatch.setattr(page_module, "normalize_text_file", cancellable_normalize)
+
+    qtbot.mouseClick(page.chapter_start_button, Qt.MouseButton.LeftButton)
+    qtbot.waitUntil(safe_stage.is_set, timeout=5000)
+    assert page.chapter_cancel_button.isEnabled()
+    qtbot.mouseClick(page.chapter_cancel_button, Qt.MouseButton.LeftButton)
+    assert page.chapter_status_label.text().startswith("正在取消")
+
+    with qtbot.waitSignal(page.chapter_finished, timeout=5000) as completed:
+        pass
+
+    assert completed.args[0].cancelled
+    assert not page.chapter_cancel_button.isEnabled()
+    assert page.chapter_progress_bar.value() == 2
+    assert "已完成 2/4 个阶段" in page.chapter_status_label.text()
+    assert "原文件和已有输出未被修改" in page.chapter_summary.toPlainText()
 
 
 def test_merge_cancel_waits_for_current_author_and_renders_remaining_count(

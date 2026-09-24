@@ -1,6 +1,11 @@
 """TXT chapter-title recognition public API."""
 
-from .file import TextChapterFileResult, TextChapterRequest, normalize_text_file
+from .file import (
+    TextChapterFileResult,
+    TextChapterProgress,
+    TextChapterRequest,
+    normalize_text_file,
+)
 from .models import ChapterIssue, ChapterNormalizationResult
 from .normalize import chinese_number_to_int, normalize_chapter_headings
 
@@ -8,6 +13,7 @@ __all__ = [
     "ChapterIssue",
     "ChapterNormalizationResult",
     "TextChapterFileResult",
+    "TextChapterProgress",
     "TextChapterRequest",
     "chinese_number_to_int",
     "normalize_text_file",
