@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
+from PySide6.QtCore import QThreadPool, Signal, Slot
 from PySide6.QtWidgets import (
     QCheckBox,
     QFileDialog,
@@ -25,27 +25,7 @@ from ebook_toolbox.services.epub_toc_repair import (
     TocRepairResult,
     repair_epub_toc,
 )
-
-
-class _WorkerSignals(QObject):
-    finished = Signal(object)
-    failed = Signal(str)
-
-
-class _TocRepairWorker(QRunnable):
-    def __init__(self, request: TocRepairRequest) -> None:
-        super().__init__()
-        self.request = request
-        self.signals = _WorkerSignals()
-
-    @Slot()
-    def run(self) -> None:
-        try:
-            result = repair_epub_toc(self.request)
-        except Exception as exc:
-            self.signals.failed.emit(f"{type(exc).__name__}: {exc}")
-            return
-        self.signals.finished.emit(result)
+from ebook_toolbox.ui.background_task import BackgroundTask
 
 
 def _format_issue(issue: object) -> str:
@@ -77,7 +57,7 @@ class EpubTocRepairPage(QWidget):
         super().__init__()
         self.setObjectName("epubTocRepairPage")
         self._thread_pool = thread_pool or QThreadPool.globalInstance()
-        self._worker: _TocRepairWorker | None = None
+        self._worker: BackgroundTask | None = None
         self._setting_output_suggestion = False
         self._output_is_suggestion = False
 
@@ -185,7 +165,7 @@ class EpubTocRepairPage(QWidget):
         self._set_running(True)
         self.output_result.clear()
         self.result_summary.clear()
-        worker = _TocRepairWorker(request)
+        worker = BackgroundTask(lambda _task: repair_epub_toc(request))
         worker.signals.finished.connect(self._handle_result)
         worker.signals.failed.connect(self._handle_worker_failure)
         self._worker = worker
