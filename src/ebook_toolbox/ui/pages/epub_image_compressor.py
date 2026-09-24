@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
+from PySide6.QtCore import QThreadPool, Signal, Slot
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -29,33 +29,13 @@ from ebook_toolbox.services.epub_image_compressor import (
     CompressionResult,
     compress_epub,
 )
+from ebook_toolbox.ui.background_task import BackgroundTask
 
 PROFILE_LABELS = {
     BALANCED.name: "balanced（均衡）",
     HIGH_QUALITY.name: "high_quality（高质量）",
     SPACE_SAVER.name: "space_saver（节省空间）",
 }
-
-
-class _WorkerSignals(QObject):
-    finished = Signal(object)
-    failed = Signal(str)
-
-
-class _CompressionWorker(QRunnable):
-    def __init__(self, request: CompressionRequest) -> None:
-        super().__init__()
-        self.request = request
-        self.signals = _WorkerSignals()
-
-    @Slot()
-    def run(self) -> None:
-        try:
-            result = compress_epub(self.request)
-        except Exception as exc:
-            self.signals.failed.emit(f"{type(exc).__name__}: {exc}")
-            return
-        self.signals.finished.emit(result)
 
 
 def _format_bytes(size: int) -> str:
@@ -84,7 +64,7 @@ class EpubImageCompressorPage(QWidget):
         super().__init__()
         self.setObjectName("epubImageCompressorPage")
         self._thread_pool = thread_pool or QThreadPool.globalInstance()
-        self._worker: _CompressionWorker | None = None
+        self._worker: BackgroundTask | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(32, 32, 32, 32)
@@ -189,7 +169,7 @@ class EpubImageCompressorPage(QWidget):
         self._set_running(True)
         self.output_result.clear()
         self.result_summary.clear()
-        worker = _CompressionWorker(request)
+        worker = BackgroundTask(lambda _task: compress_epub(request))
         worker.signals.finished.connect(self._handle_result)
         worker.signals.failed.connect(self._handle_worker_failure)
         self._worker = worker

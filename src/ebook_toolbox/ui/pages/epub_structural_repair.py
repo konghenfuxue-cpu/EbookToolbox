@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import os
-import threading
 from collections.abc import Iterable
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal, Slot
+from PySide6.QtCore import Qt, QThreadPool, Signal, Slot
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -36,38 +35,9 @@ from ebook_toolbox.services.epub_structural_repair import (
     RepairWarning,
     repair_epub_batch,
 )
+from ebook_toolbox.ui.background_task import BackgroundTask
 
 _SKIPPED_WARNING_CODES = frozenset({"input_skipped", "non_epub_skipped", "input_scan_failed"})
-
-
-class _WorkerSignals(QObject):
-    finished = Signal(object)
-    failed = Signal(str)
-    progress = Signal(object)
-
-
-class _StructuralRepairWorker(QRunnable):
-    def __init__(self, request: BatchRepairRequest) -> None:
-        super().__init__()
-        self.request = request
-        self.signals = _WorkerSignals()
-        self._cancel_requested = threading.Event()
-
-    def cancel(self) -> None:
-        self._cancel_requested.set()
-
-    @Slot()
-    def run(self) -> None:
-        try:
-            result = repair_epub_batch(
-                self.request,
-                progress_callback=self.signals.progress.emit,
-                should_cancel=self._cancel_requested.is_set,
-            )
-        except Exception as exc:  # pragma: no cover - guarded by the GUI state test
-            self.signals.failed.emit(str(exc))
-            return
-        self.signals.finished.emit(result)
 
 
 def _path_identity(path: Path) -> str:
@@ -88,7 +58,7 @@ class EpubStructuralRepairPage(QWidget):
         super().__init__()
         self.setObjectName("epubStructuralRepairPage")
         self._thread_pool = thread_pool or QThreadPool.globalInstance()
-        self._worker: _StructuralRepairWorker | None = None
+        self._worker: BackgroundTask | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(32, 24, 32, 24)
@@ -309,7 +279,14 @@ class EpubStructuralRepairPage(QWidget):
         self.result_details.clear()
         self._set_summary(0, 0, 0, 0)
         self._set_running(True)
-        worker = _StructuralRepairWorker(request)
+        worker = BackgroundTask(
+            lambda task: repair_epub_batch(
+                request,
+                progress_callback=task.report_progress,
+                should_cancel=task.is_cancel_requested,
+            ),
+            format_exception=str,
+        )
         worker.signals.finished.connect(self._handle_result)
         worker.signals.failed.connect(self._handle_worker_failure)
         worker.signals.progress.connect(self._handle_progress)

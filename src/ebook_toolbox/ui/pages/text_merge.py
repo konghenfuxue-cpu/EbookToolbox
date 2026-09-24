@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
+from PySide6.QtCore import QThreadPool, Signal, Slot
 from PySide6.QtWidgets import (
     QCheckBox,
     QFileDialog,
@@ -25,39 +25,7 @@ from ebook_toolbox.services.text_chapter import (
     normalize_text_file,
 )
 from ebook_toolbox.services.text_merge import TextMergeRequest, TextMergeResult, merge_author_texts
-
-
-class _WorkerSignals(QObject):
-    finished = Signal(object)
-    failed = Signal(str)
-
-
-class _TextMergeWorker(QRunnable):
-    def __init__(self, request: TextMergeRequest) -> None:
-        super().__init__()
-        self._request = request
-        self.signals = _WorkerSignals()
-
-    @Slot()
-    def run(self) -> None:
-        try:
-            self.signals.finished.emit(merge_author_texts(self._request))
-        except Exception as exc:  # pragma: no cover - retained as GUI safety net
-            self.signals.failed.emit(f"{type(exc).__name__}: {exc}")
-
-
-class _TextChapterWorker(QRunnable):
-    def __init__(self, request: TextChapterRequest) -> None:
-        super().__init__()
-        self._request = request
-        self.signals = _WorkerSignals()
-
-    @Slot()
-    def run(self) -> None:
-        try:
-            self.signals.finished.emit(normalize_text_file(self._request))
-        except Exception as exc:  # pragma: no cover - retained as GUI safety net
-            self.signals.failed.emit(f"{type(exc).__name__}: {exc}")
+from ebook_toolbox.ui.background_task import BackgroundTask
 
 
 def _format_issue(issue: object) -> str:
@@ -77,8 +45,8 @@ class TextMergePage(QWidget):
         super().__init__()
         self.setObjectName("textMergePage")
         self._thread_pool = thread_pool or QThreadPool.globalInstance()
-        self._worker: _TextMergeWorker | None = None
-        self._chapter_worker: _TextChapterWorker | None = None
+        self._worker: BackgroundTask | None = None
+        self._chapter_worker: BackgroundTask | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(32, 24, 32, 24)
@@ -198,7 +166,7 @@ class TextMergePage(QWidget):
             return
         self._set_running(True)
         self.result_summary.clear()
-        self._worker = _TextMergeWorker(request)
+        self._worker = BackgroundTask(lambda _task: merge_author_texts(request))
         self._worker.signals.finished.connect(self._handle_result)
         self._worker.signals.failed.connect(self._handle_worker_failure)
         self._thread_pool.start(self._worker)
@@ -245,12 +213,13 @@ class TextMergePage(QWidget):
         output = self.chapter_output_edit.text().strip()
         self.chapter_start_button.setEnabled(False)
         self.chapter_summary.setPlainText("正在识别卷章标题，请稍候…")
-        self._chapter_worker = _TextChapterWorker(
-            TextChapterRequest(
-                Path(source),
-                Path(output) if output else None,
-                self.chapter_overwrite_check.isChecked(),
-            )
+        request = TextChapterRequest(
+            Path(source),
+            Path(output) if output else None,
+            self.chapter_overwrite_check.isChecked(),
+        )
+        self._chapter_worker = BackgroundTask(
+            lambda _task: normalize_text_file(request)
         )
         self._chapter_worker.signals.finished.connect(self._handle_chapter_result)
         self._chapter_worker.signals.failed.connect(self._handle_chapter_failure)
