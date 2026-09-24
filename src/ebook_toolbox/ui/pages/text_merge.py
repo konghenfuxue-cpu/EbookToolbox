@@ -24,7 +24,12 @@ from ebook_toolbox.services.text_chapter import (
     TextChapterRequest,
     normalize_text_file,
 )
-from ebook_toolbox.services.text_merge import TextMergeRequest, TextMergeResult, merge_author_texts
+from ebook_toolbox.services.text_merge import (
+    TextMergeProgress,
+    TextMergeRequest,
+    TextMergeResult,
+    merge_author_texts,
+)
 from ebook_toolbox.ui.background_task import BackgroundTask
 
 
@@ -89,15 +94,27 @@ class TextMergePage(QWidget):
         self.overwrite_check.setObjectName("textMergeOverwrite")
         layout.addWidget(self.overwrite_check)
 
+        merge_actions = QHBoxLayout()
         self.start_button = QPushButton("开始排版并合并")
         self.start_button.setObjectName("startTextMergeButton")
         self.start_button.clicked.connect(self.start_merge)
-        layout.addWidget(self.start_button)
+        self.cancel_button = QPushButton("取消")
+        self.cancel_button.setObjectName("cancelTextMergeButton")
+        self.cancel_button.setEnabled(False)
+        self.cancel_button.setToolTip("当前作者合集会安全完成，随后停止处理剩余作者。")
+        self.cancel_button.clicked.connect(self.cancel_merge)
+        merge_actions.addWidget(self.start_button)
+        merge_actions.addWidget(self.cancel_button)
+        merge_actions.addStretch(1)
+        layout.addLayout(merge_actions)
         self.progress_bar = QProgressBar()
         self.progress_bar.setObjectName("textMergeProgress")
         self.progress_bar.setRange(0, 1)
-        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setTextVisible(True)
         layout.addWidget(self.progress_bar)
+        self.merge_summary_label = QLabel("总数：0　成功：0　失败：0　跳过：0　取消：0")
+        self.merge_summary_label.setObjectName("textMergeSummary")
+        layout.addWidget(self.merge_summary_label)
         self.status_label = QLabel("请选择包含 TXT 文件的文件夹。")
         self.status_label.setObjectName("textMergeStatus")
         layout.addWidget(self.status_label)
@@ -166,10 +183,25 @@ class TextMergePage(QWidget):
             return
         self._set_running(True)
         self.result_summary.clear()
-        self._worker = BackgroundTask(lambda _task: merge_author_texts(request))
+        self._worker = BackgroundTask(
+            lambda task: merge_author_texts(
+                request,
+                progress_callback=task.report_progress,
+                should_cancel=task.is_cancel_requested,
+            )
+        )
         self._worker.signals.finished.connect(self._handle_result)
         self._worker.signals.failed.connect(self._handle_worker_failure)
+        self._worker.signals.progress.connect(self._handle_progress)
         self._thread_pool.start(self._worker)
+
+    @Slot()
+    def cancel_merge(self) -> None:
+        if self._worker is None:
+            return
+        self._worker.cancel()
+        self.cancel_button.setEnabled(False)
+        self.status_label.setText("正在取消；当前作者合集安全完成后将停止…")
 
     @Slot()
     def _choose_source(self) -> None:
@@ -189,12 +221,39 @@ class TextMergePage(QWidget):
 
     def _set_running(self, running: bool) -> None:
         self.start_button.setEnabled(not running)
+        self.cancel_button.setEnabled(running)
         if running:
             self.progress_bar.setRange(0, 0)
+            self.progress_bar.setValue(0)
             self.status_label.setText("正在排版并合并 TXT，请稍候…")
         else:
-            self.progress_bar.setRange(0, 1)
-            self.progress_bar.setValue(1)
+            if self.progress_bar.maximum() == 0:
+                self.progress_bar.setRange(0, 1)
+
+    @Slot(object)
+    def _handle_progress(self, progress: TextMergeProgress) -> None:
+        self.progress_bar.setRange(0, max(1, progress.total))
+        self.progress_bar.setValue(progress.completed)
+        self._set_merge_summary(
+            progress.total,
+            progress.succeeded,
+            progress.failed,
+            progress.skipped,
+            0,
+        )
+        if progress.current_source is not None and self.cancel_button.isEnabled():
+            self.status_label.setText(
+                f"正在处理 {progress.completed + 1}/{progress.total}："
+                f"{progress.current_source.name}"
+            )
+
+    def _set_merge_summary(
+        self, total: int, succeeded: int, failed: int, skipped: int, cancelled: int
+    ) -> None:
+        self.merge_summary_label.setText(
+            f"总数：{total}　成功：{succeeded}　失败：{failed}　"
+            f"跳过：{skipped}　取消：{cancelled}"
+        )
 
     @Slot()
     def _choose_chapter_source(self) -> None:
@@ -262,6 +321,8 @@ class TextMergePage(QWidget):
             f"合并 TXT：{result.source_count} 个",
             f"跳过文件：{result.skipped_count} 个",
         ]
+        if result.cancelled:
+            lines.append(f"取消未处理：{result.cancelled_count} 个")
         lines.extend(
             f"{item.author}：{item.source_count} 篇 → {item.output.name}" for item in result.files
         )
@@ -270,8 +331,23 @@ class TextMergePage(QWidget):
         if result.errors:
             lines.extend(("", "错误：", *(_format_issue(item) for item in result.errors)))
         self.result_summary.setPlainText("\n".join(lines))
-        self.status_label.setText(
-            "TXT 合并完成。" if result.success else "TXT 合并未完成，请查看详情。"
+        if result.cancelled:
+            self.status_label.setText(
+                f"TXT 合并已取消；已处理 {result.processed_count} 个，"
+                f"未处理 {result.cancelled_count} 个。"
+            )
+        else:
+            self.status_label.setText(
+                "TXT 合并完成。" if result.success else "TXT 合并未完成，请查看详情。"
+            )
+        self.progress_bar.setRange(0, max(1, result.planned_count))
+        self.progress_bar.setValue(result.processed_count)
+        self._set_merge_summary(
+            result.planned_count,
+            result.source_count,
+            result.failed_source_count,
+            result.skipped_source_count,
+            result.cancelled_count,
         )
         self.merge_finished.emit(result)
 

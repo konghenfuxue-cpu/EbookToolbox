@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from ebook_toolbox.services.text_merge import (
+    TextMergeProgress,
     TextMergeRequest,
     format_plain_text,
     merge_author_texts,
@@ -50,6 +51,9 @@ def test_merge_does_not_overwrite_existing_output_without_opt_in(tmp_path: Path)
     assert not result.success
     assert output.read_text(encoding="utf-8") == "原输出"
     assert result.errors[0].code == "output_exists"
+    assert result.planned_count == 1
+    assert result.processed_count == 1
+    assert result.failed_source_count == 1
 
 
 def test_merge_overwrite_replaces_existing_output(tmp_path: Path) -> None:
@@ -72,3 +76,67 @@ def test_merge_reports_invalid_input_directory(tmp_path: Path) -> None:
 
     assert not result.success
     assert result.errors[0].code == "invalid_source_directory"
+
+
+def test_empty_matching_file_is_counted_as_skipped(tmp_path: Path) -> None:
+    write_text(tmp_path / "[甲] 空.txt", "\ufeff\u200b")
+
+    result = merge_author_texts(TextMergeRequest(tmp_path))
+
+    assert not result.success
+    assert result.planned_count == 1
+    assert result.processed_count == 1
+    assert result.skipped_source_count == 1
+    assert result.failed_source_count == 0
+
+
+def test_merge_reports_file_progress(tmp_path: Path) -> None:
+    write_text(tmp_path / "[甲] 2.txt", "二")
+    write_text(tmp_path / "[甲] 1.txt", "一")
+    updates: list[TextMergeProgress] = []
+
+    result = merge_author_texts(
+        TextMergeRequest(tmp_path), progress_callback=updates.append
+    )
+
+    assert result.success
+    assert result.planned_count == 2
+    assert result.processed_count == 2
+    assert result.failed_source_count == 0
+    assert result.skipped_source_count == 0
+    assert updates[0] == TextMergeProgress(2, 0, 0, 0, 0)
+    assert [item.current_source.name for item in updates if item.current_source] == [
+        "[甲] 1.txt",
+        "[甲] 2.txt",
+    ]
+    assert updates[-1].completed == 2
+    assert updates[-1].succeeded == 2
+
+
+def test_cancel_stops_before_next_author_and_preserves_published_output(
+    tmp_path: Path,
+) -> None:
+    write_text(tmp_path / "[A] 一本.txt", "A")
+    write_text(tmp_path / "[B] 一本.txt", "B")
+    cancel_requested = False
+
+    def observe(progress: TextMergeProgress) -> None:
+        nonlocal cancel_requested
+        if progress.succeeded == 1:
+            cancel_requested = True
+
+    result = merge_author_texts(
+        TextMergeRequest(tmp_path),
+        progress_callback=observe,
+        should_cancel=lambda: cancel_requested,
+    )
+
+    output_directory = tmp_path / "EbookToolbox-合集"
+    assert (output_directory / "A合集.txt").is_file()
+    assert not (output_directory / "B合集.txt").exists()
+    assert result.cancelled
+    assert result.planned_count == 2
+    assert result.processed_count == 1
+    assert result.cancelled_count == 1
+    assert result.failed_source_count == 0
+    assert not result.success
