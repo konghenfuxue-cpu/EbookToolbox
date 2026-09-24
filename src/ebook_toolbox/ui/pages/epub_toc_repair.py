@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from ebook_toolbox.services.epub_toc_repair import (
     TocEntry,
+    TocRepairProgress,
     TocRepairRequest,
     TocRepairResult,
     repair_epub_toc,
@@ -110,13 +111,21 @@ class EpubTocRepairPage(QWidget):
         self.start_button = QPushButton("开始修复")
         self.start_button.setObjectName("startTocRepairButton")
         self.start_button.clicked.connect(self.start_repair)
-        layout.addWidget(self.start_button)
+        self.cancel_button = QPushButton("取消")
+        self.cancel_button.setObjectName("cancelTocRepairButton")
+        self.cancel_button.setEnabled(False)
+        self.cancel_button.setToolTip("完成当前安全阶段后停止，不会发布未完成的输出文件")
+        self.cancel_button.clicked.connect(self.cancel_repair)
+        action_row = QHBoxLayout()
+        action_row.addWidget(self.start_button)
+        action_row.addWidget(self.cancel_button)
+        layout.addLayout(action_row)
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setObjectName("tocRepairProgress")
         self.progress_bar.setRange(0, 1)
         self.progress_bar.setValue(0)
-        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setTextVisible(True)
         layout.addWidget(self.progress_bar)
 
         self.status_label = QLabel("请选择一个 EPUB 文件。")
@@ -165,11 +174,26 @@ class EpubTocRepairPage(QWidget):
         self._set_running(True)
         self.output_result.clear()
         self.result_summary.clear()
-        worker = BackgroundTask(lambda _task: repair_epub_toc(request))
+        worker = BackgroundTask(
+            lambda task: repair_epub_toc(
+                request,
+                progress_callback=task.report_progress,
+                should_cancel=task.is_cancel_requested,
+            )
+        )
+        worker.signals.progress.connect(self._handle_progress)
         worker.signals.finished.connect(self._handle_result)
         worker.signals.failed.connect(self._handle_worker_failure)
         self._worker = worker
         self._thread_pool.start(worker)
+
+    @Slot()
+    def cancel_repair(self) -> None:
+        if self._worker is None or not self.cancel_button.isEnabled():
+            return
+        self._worker.cancel()
+        self.cancel_button.setEnabled(False)
+        self.status_label.setText("正在取消；完成当前安全阶段后停止且不发布输出…")
 
     @Slot(str)
     def _suggest_output_path(self, source_text: str) -> None:
@@ -218,12 +242,31 @@ class EpubTocRepairPage(QWidget):
             self.start_button,
         ):
             control.setEnabled(not running)
+        self.cancel_button.setEnabled(running)
         if running:
-            self.progress_bar.setRange(0, 0)
-            self.status_label.setText("正在修复目录，请稍候…")
-        else:
-            self.progress_bar.setRange(0, 1)
-            self.progress_bar.setValue(1)
+            self.progress_bar.setRange(0, 5)
+            self.progress_bar.setValue(0)
+            self.status_label.setText("正在修复目录：准备开始（0/5）")
+
+    @Slot(object)
+    def _handle_progress(self, progress: TocRepairProgress) -> None:
+        self.progress_bar.setRange(0, progress.total)
+        self.progress_bar.setValue(progress.completed)
+        stage_names = {
+            "extracting": "解包 EPUB",
+            "analyzing": "解析并重建目录",
+            "building": "重建 EPUB",
+            "validating": "验证输出",
+            "publishing": "原子发布",
+            "completed": "完成",
+        }
+        if progress.stage == "publishing":
+            self.cancel_button.setEnabled(False)
+        if self.cancel_button.isEnabled() or progress.stage in {"publishing", "completed"}:
+            stage = stage_names.get(progress.stage, progress.stage)
+            self.status_label.setText(
+                f"正在修复目录：{stage}（{progress.completed}/{progress.total}）"
+            )
 
     def _show_input_error(self, message: str) -> None:
         self.status_label.setText("无法开始修复。")
@@ -236,6 +279,7 @@ class EpubTocRepairPage(QWidget):
         try:
             worker.signals.finished.disconnect(self._handle_result)
             worker.signals.failed.disconnect(self._handle_worker_failure)
+            worker.signals.progress.disconnect(self._handle_progress)
         except (RuntimeError, TypeError):
             pass
         self._worker = None
@@ -244,8 +288,17 @@ class EpubTocRepairPage(QWidget):
     def _handle_result(self, result: TocRepairResult) -> None:
         self._set_running(False)
         self._release_worker()
+        self.progress_bar.setRange(0, result.total_stages)
+        self.progress_bar.setValue(result.completed_stages)
         lines: list[str] = []
-        if result.success:
+        if result.cancelled:
+            self.status_label.setText(
+                "目录修复已取消；"
+                f"已完成 {result.completed_stages}/{result.total_stages} 个阶段，未发布输出。"
+            )
+            self.output_result.clear()
+            lines.append("操作已安全取消，原文件和已有输出未被修改。")
+        elif result.success:
             self.status_label.setText("目录修复完成。")
             self.output_result.setText(str(result.output))
             volumes, chapters = _entry_counts(result.entries)
@@ -277,6 +330,7 @@ class EpubTocRepairPage(QWidget):
     def _handle_worker_failure(self, message: str) -> None:
         self._set_running(False)
         self._release_worker()
+        self.progress_bar.setRange(0, 5)
         self.status_label.setText("目录修复失败。")
         self.output_result.clear()
         self.result_summary.setPlainText(f"[unexpected_error] {message}")

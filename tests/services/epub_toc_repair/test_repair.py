@@ -7,6 +7,7 @@ from xml.etree import ElementTree as ET
 
 import pytest
 
+import ebook_toolbox.services.epub_toc_repair.repair as repair_module
 from ebook_toolbox.services.epub_toc_repair import TocRepairRequest, repair_epub_toc
 
 
@@ -405,3 +406,75 @@ def test_corrupt_epub_returns_structured_error(tmp_path: Path) -> None:
     assert result.errors[0].code == "archive_error"
     assert source.read_bytes() == before
     assert not result.output.exists()
+
+
+def test_reports_real_repair_stages(tmp_path: Path) -> None:
+    source = tmp_path / "book.epub"
+    make_epub(source, version=3, pages=standard_pages(), toc="nav")
+    updates = []
+
+    result = repair_epub_toc(TocRepairRequest(source), progress_callback=updates.append)
+
+    assert result.success
+    assert result.completed_stages == result.total_stages == 5
+    assert [(update.stage, update.completed) for update in updates] == [
+        ("extracting", 0),
+        ("analyzing", 1),
+        ("building", 2),
+        ("validating", 3),
+        ("publishing", 4),
+        ("completed", 5),
+    ]
+
+
+def test_cancellation_after_analysis_does_not_create_output(tmp_path: Path) -> None:
+    source = tmp_path / "book.epub"
+    make_epub(source, version=3, pages=standard_pages(), toc="nav")
+    source_before = source.read_bytes()
+    cancel_requested = False
+
+    def record_progress(update) -> None:
+        nonlocal cancel_requested
+        if update.stage == "analyzing":
+            cancel_requested = True
+
+    result = repair_epub_toc(
+        TocRepairRequest(source),
+        progress_callback=record_progress,
+        should_cancel=lambda: cancel_requested,
+    )
+
+    assert result.cancelled
+    assert not result.success
+    assert result.completed_stages == 2
+    assert source.read_bytes() == source_before
+    assert not result.output.exists()
+
+
+def test_cancellation_after_build_preserves_existing_output_and_cleans_temp(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "book.epub"
+    output = tmp_path / "existing.epub"
+    make_epub(source, version=3, pages=standard_pages(), toc="nav")
+    output.write_bytes(b"old output")
+    cancel_requested = False
+    original_build = repair_module.build_epub
+
+    def build_then_cancel(root, destination) -> None:
+        nonlocal cancel_requested
+        original_build(root, destination)
+        cancel_requested = True
+
+    monkeypatch.setattr(repair_module, "build_epub", build_then_cancel)
+
+    result = repair_epub_toc(
+        TocRepairRequest(source, output=output, overwrite=True),
+        should_cancel=lambda: cancel_requested,
+    )
+
+    assert result.cancelled
+    assert not result.success
+    assert result.completed_stages == 3
+    assert output.read_bytes() == b"old output"
+    assert list(tmp_path.glob(f".{output.name}.*.tmp")) == []
