@@ -25,6 +25,7 @@ from ebook_toolbox.services.epub_image_compressor import (
     HIGH_QUALITY,
     PROFILES,
     SPACE_SAVER,
+    CompressionProgress,
     CompressionRequest,
     CompressionResult,
     compress_epub,
@@ -114,17 +115,30 @@ class EpubImageCompressorPage(QWidget):
         form.addRow("封面", self.include_cover_check)
         layout.addLayout(form)
 
+        action_row = QHBoxLayout()
         self.start_button = QPushButton("开始压缩")
         self.start_button.setObjectName("startCompressionButton")
         self.start_button.clicked.connect(self.start_compression)
-        layout.addWidget(self.start_button)
+        self.cancel_button = QPushButton("取消")
+        self.cancel_button.setObjectName("cancelCompressionButton")
+        self.cancel_button.setEnabled(False)
+        self.cancel_button.setToolTip("当前图片或安全阶段完成后取消，不会发布半成品 EPUB。")
+        self.cancel_button.clicked.connect(self.cancel_compression)
+        action_row.addWidget(self.start_button)
+        action_row.addWidget(self.cancel_button)
+        action_row.addStretch(1)
+        layout.addLayout(action_row)
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setObjectName("compressionProgress")
         self.progress_bar.setRange(0, 1)
         self.progress_bar.setValue(0)
-        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setTextVisible(True)
         layout.addWidget(self.progress_bar)
+
+        self.summary_label = QLabel("总数：0　替换：0　跳过：0　失败：0　取消：0")
+        self.summary_label.setObjectName("compressionSummary")
+        layout.addWidget(self.summary_label)
 
         self.status_label = QLabel("请选择一个 EPUB 文件。")
         self.status_label.setObjectName("compressionStatus")
@@ -169,11 +183,26 @@ class EpubImageCompressorPage(QWidget):
         self._set_running(True)
         self.output_result.clear()
         self.result_summary.clear()
-        worker = BackgroundTask(lambda _task: compress_epub(request))
+        worker = BackgroundTask(
+            lambda task: compress_epub(
+                request,
+                progress_callback=task.report_progress,
+                should_cancel=task.is_cancel_requested,
+            )
+        )
         worker.signals.finished.connect(self._handle_result)
         worker.signals.failed.connect(self._handle_worker_failure)
+        worker.signals.progress.connect(self._handle_progress)
         self._worker = worker
         self._thread_pool.start(worker)
+
+    @Slot()
+    def cancel_compression(self) -> None:
+        if self._worker is None:
+            return
+        self._worker.cancel()
+        self.cancel_button.setEnabled(False)
+        self.status_label.setText("正在取消；完成当前安全阶段后停止且不发布输出…")
 
     @Slot()
     def _choose_source(self) -> None:
@@ -198,12 +227,51 @@ class EpubImageCompressorPage(QWidget):
 
     def _set_running(self, running: bool) -> None:
         self.start_button.setEnabled(not running)
+        self.cancel_button.setEnabled(running)
         if running:
             self.progress_bar.setRange(0, 0)
+            self.progress_bar.setValue(0)
             self.status_label.setText("正在压缩，请稍候…")
         else:
-            self.progress_bar.setRange(0, 1)
-            self.progress_bar.setValue(1)
+            if self.progress_bar.maximum() == 0:
+                self.progress_bar.setRange(0, 1)
+
+    def _set_summary(
+        self, total: int, replaced: int, skipped: int, failed: int, cancelled: int
+    ) -> None:
+        self.summary_label.setText(
+            f"总数：{total}　替换：{replaced}　跳过：{skipped}　"
+            f"失败：{failed}　取消：{cancelled}"
+        )
+
+    @Slot(object)
+    def _handle_progress(self, progress: CompressionProgress) -> None:
+        self.progress_bar.setRange(0, max(1, progress.total))
+        self.progress_bar.setValue(progress.completed)
+        self._set_summary(
+            progress.total,
+            progress.replaced,
+            progress.skipped,
+            progress.failed,
+            0,
+        )
+        if not self.cancel_button.isEnabled():
+            return
+        if progress.current_image is not None:
+            self.status_label.setText(
+                f"正在处理 {progress.completed + 1}/{progress.total}："
+                f"{progress.current_image.name}"
+            )
+            return
+        stage_messages = {
+            "building": "正在重建 EPUB…",
+            "validating": "正在验证输出 EPUB…",
+            "publishing": "正在原子发布输出 EPUB，此阶段无法取消…",
+        }
+        if progress.stage in stage_messages:
+            if progress.stage == "publishing":
+                self.cancel_button.setEnabled(False)
+            self.status_label.setText(stage_messages[progress.stage])
 
     def _show_input_error(self, message: str) -> None:
         self.status_label.setText("无法开始压缩。")
@@ -214,7 +282,14 @@ class EpubImageCompressorPage(QWidget):
         self._set_running(False)
         self._worker = None
         lines: list[str] = []
-        if result.success:
+        if result.cancelled:
+            self.status_label.setText(
+                f"图片压缩已取消；已处理 {result.processed_count} 张，"
+                f"未处理 {result.cancelled_count} 张，未发布输出。"
+            )
+            self.output_result.clear()
+            lines.append(f"取消未处理：{result.cancelled_count} 张")
+        elif result.success:
             self.status_label.setText("压缩完成。")
             self.output_result.setText(str(result.output))
             lines.extend(
@@ -238,6 +313,15 @@ class EpubImageCompressorPage(QWidget):
             lines.append("\n错误：")
             lines.extend(_format_issue(error) for error in result.errors)
         self.result_summary.setPlainText("\n".join(lines))
+        self.progress_bar.setRange(0, max(1, result.planned_count))
+        self.progress_bar.setValue(result.processed_count)
+        self._set_summary(
+            result.planned_count,
+            result.replaced_count,
+            result.skipped_count,
+            result.failed_count,
+            result.cancelled_count,
+        )
         self.compression_finished.emit(result)
 
     @Slot(str)

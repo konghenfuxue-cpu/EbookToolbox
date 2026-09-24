@@ -357,6 +357,104 @@ def test_output_mimetype_is_first_and_stored(tmp_path):
         assert first.compress_type == zipfile.ZIP_STORED
 
 
+def test_image_progress_reports_each_candidate_and_archive_stages(tmp_path):
+    source = tmp_path / "source.epub"
+    output = tmp_path / "output.epub"
+    make_epub(
+        source,
+        {
+            "page-2.jpg": image_bytes("JPEG"),
+            "page-1.png": image_bytes("PNG"),
+        },
+    )
+    updates = []
+
+    result = compress_epub(
+        CompressionRequest(
+            source,
+            output=output,
+            profile=type(BALANCED)("test", 30, 400, 1),
+        ),
+        progress_callback=updates.append,
+    )
+
+    assert result.success
+    assert result.planned_count == 2
+    assert result.processed_count == 2
+    assert [item.current_image.name for item in updates if item.current_image] == [
+        "page-1.png",
+        "page-2.jpg",
+    ]
+    assert {item.stage for item in updates} >= {"images", "building", "validating", "publishing"}
+    assert updates[-1].completed == 2
+
+
+def test_cancel_between_images_cleans_work_and_does_not_publish(tmp_path):
+    source = tmp_path / "source.epub"
+    output = tmp_path / "output.epub"
+    make_epub(
+        source,
+        {
+            "page-1.jpg": image_bytes("JPEG"),
+            "page-2.jpg": image_bytes("JPEG"),
+        },
+    )
+    before = hashlib.sha256(source.read_bytes()).digest()
+    cancel_requested = False
+
+    def observe(progress):
+        nonlocal cancel_requested
+        if progress.completed == 1:
+            cancel_requested = True
+
+    result = compress_epub(
+        CompressionRequest(
+            source,
+            output=output,
+            profile=type(BALANCED)("test", 30, 400, 1),
+        ),
+        progress_callback=observe,
+        should_cancel=lambda: cancel_requested,
+    )
+
+    assert result.cancelled
+    assert not result.success
+    assert result.planned_count == 2
+    assert result.processed_count == 1
+    assert result.cancelled_count == 1
+    assert not output.exists()
+    assert hashlib.sha256(source.read_bytes()).digest() == before
+    assert not list(tmp_path.glob(".output.epub.*.tmp"))
+
+
+def test_cancel_after_build_cleans_owned_temporary_before_publish(tmp_path, monkeypatch):
+    source = tmp_path / "source.epub"
+    output = tmp_path / "output.epub"
+    make_epub(source, {"page.jpg": image_bytes("JPEG")})
+    existing_output = b"existing output must survive cancellation"
+    output.write_bytes(existing_output)
+    real_build = compressor_module.build_epub
+    cancel_requested = False
+
+    def build_then_cancel(root, temporary_file):
+        nonlocal cancel_requested
+        real_build(root, temporary_file)
+        cancel_requested = True
+
+    monkeypatch.setattr(compressor_module, "build_epub", build_then_cancel)
+
+    result = compress_epub(
+        CompressionRequest(source, output=output, overwrite=True),
+        should_cancel=lambda: cancel_requested,
+    )
+
+    assert result.cancelled
+    assert not result.success
+    assert result.errors == []
+    assert output.read_bytes() == existing_output
+    assert not list(tmp_path.glob(".output.epub.*.tmp"))
+
+
 def test_temporary_output_resists_symlink_insertion_before_build(tmp_path, monkeypatch):
     source = tmp_path / "source.epub"
     output = tmp_path / "output.epub"
