@@ -1,5 +1,7 @@
 [CmdletBinding()]
-param()
+param(
+    [switch]$SkipChecks
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -208,9 +210,14 @@ try {
     $zipPath = Get-NormalizedPath -Path (Join-Path $projectRoot "dist/EbookToolbox-portable.zip")
     $allowedCleanupTargets = @($buildWorkDirectory, $portableDirectory, $zipPath)
 
-    Invoke-NativeCommand -FilePath $uvCommand.Source -ArgumentList @("sync", "--dev")
-    Invoke-NativeCommand -FilePath $uvCommand.Source -ArgumentList @("run", "ruff", "check", ".")
-    Invoke-NativeCommand -FilePath $uvCommand.Source -ArgumentList @("run", "pytest")
+    if (-not $SkipChecks) {
+        Invoke-NativeCommand -FilePath $uvCommand.Source -ArgumentList @("sync", "--dev")
+        Invoke-NativeCommand -FilePath $uvCommand.Source -ArgumentList @("run", "ruff", "check", ".")
+        Invoke-NativeCommand -FilePath $uvCommand.Source -ArgumentList @("run", "pytest")
+    }
+    else {
+        Write-Host "跳过依赖同步、Ruff 和 pytest；假定调用方已经完成验证。" -ForegroundColor Yellow
+    }
 
     foreach ($target in $allowedCleanupTargets) {
         Remove-SafeBuildTarget `

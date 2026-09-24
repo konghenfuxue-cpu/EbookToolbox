@@ -70,6 +70,9 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\scripts\build_windows.ps1
 ```
 
+脚本默认会先运行依赖同步、Ruff 和完整测试。CI 已单独完成这些检查时，可使用
+`-SkipChecks` 直接执行构建、资源校验和 EXE 自检；该参数不应替代本地提交前验证。
+
 脚本会依次执行以下工作：
 
 1. 确认系统为 Windows，且当前目录是项目根目录；
@@ -89,6 +92,9 @@ dist/EbookToolbox-portable.zip
 
 构建中间文件位于 `build/EbookToolbox/`。`build/`、`dist/` 和开发缓存均被 Git 忽略，
 而 `EbookToolbox.spec`、Windows 版本信息和图标源资源需要纳入版本控制。
+
+GitHub Actions 会在 Windows 测试通过后执行同一构建脚本，启动打包后的 EXE 完成
+`--self-test`，并将 `EbookToolbox-portable.zip` 作为保留 14 天的工作流产物上传。
 
 ## 使用 Windows 便携版
 
