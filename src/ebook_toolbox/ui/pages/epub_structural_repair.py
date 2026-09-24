@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -28,6 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from ebook_toolbox.services.epub_structural_repair import (
+    BatchRepairProgress,
     BatchRepairRequest,
     BatchRepairResult,
     RepairError,
@@ -41,6 +43,7 @@ _SKIPPED_WARNING_CODES = frozenset({"input_skipped", "non_epub_skipped", "input_
 class _WorkerSignals(QObject):
     finished = Signal(object)
     failed = Signal(str)
+    progress = Signal(object)
 
 
 class _StructuralRepairWorker(QRunnable):
@@ -48,11 +51,19 @@ class _StructuralRepairWorker(QRunnable):
         super().__init__()
         self.request = request
         self.signals = _WorkerSignals()
+        self._cancel_requested = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancel_requested.set()
 
     @Slot()
     def run(self) -> None:
         try:
-            result = repair_epub_batch(self.request)
+            result = repair_epub_batch(
+                self.request,
+                progress_callback=self.signals.progress.emit,
+                should_cancel=self._cancel_requested.is_set,
+            )
         except Exception as exc:  # pragma: no cover - guarded by the GUI state test
             self.signals.failed.emit(str(exc))
             return
@@ -173,17 +184,26 @@ class EpubStructuralRepairPage(QWidget):
         options_row.addStretch(1)
         layout.addLayout(options_row)
 
+        action_row = QHBoxLayout()
         self.start_button = QPushButton("开始修复")
         self.start_button.setObjectName("startStructuralRepairButton")
         self.start_button.setEnabled(False)
         self.start_button.clicked.connect(self.start_repair)
-        layout.addWidget(self.start_button)
+        self.cancel_button = QPushButton("取消")
+        self.cancel_button.setObjectName("cancelStructuralRepairButton")
+        self.cancel_button.setEnabled(False)
+        self.cancel_button.setToolTip("当前文件会安全完成，随后停止处理剩余文件。")
+        self.cancel_button.clicked.connect(self.cancel_repair)
+        action_row.addWidget(self.start_button)
+        action_row.addWidget(self.cancel_button)
+        action_row.addStretch(1)
+        layout.addLayout(action_row)
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setObjectName("structuralRepairProgress")
         self.progress_bar.setRange(0, 1)
         self.progress_bar.setValue(0)
-        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setTextVisible(True)
         layout.addWidget(self.progress_bar)
 
         self.status_label = QLabel("请添加至少一个 EPUB 文件或文件夹。")
@@ -205,7 +225,7 @@ class EpubStructuralRepairPage(QWidget):
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.result_table, 1)
 
-        self.summary_label = QLabel("总数：0　成功：0　失败：0　跳过：0")
+        self.summary_label = QLabel("总数：0　成功：0　失败：0　跳过：0　取消：0")
         self.summary_label.setObjectName("structuralRepairSummary")
         layout.addWidget(self.summary_label)
 
@@ -292,8 +312,17 @@ class EpubStructuralRepairPage(QWidget):
         worker = _StructuralRepairWorker(request)
         worker.signals.finished.connect(self._handle_result)
         worker.signals.failed.connect(self._handle_worker_failure)
+        worker.signals.progress.connect(self._handle_progress)
         self._worker = worker
         self._thread_pool.start(worker)
+
+    @Slot()
+    def cancel_repair(self) -> None:
+        if self._worker is None:
+            return
+        self._worker.cancel()
+        self.cancel_button.setEnabled(False)
+        self.status_label.setText("正在取消；当前文件安全完成后将停止后续任务…")
 
     @Slot()
     def _choose_epubs(self) -> None:
@@ -350,12 +379,14 @@ class EpubStructuralRepairPage(QWidget):
             self.start_button,
         ):
             control.setEnabled(not running)
+        self.cancel_button.setEnabled(running)
         if running:
             self.progress_bar.setRange(0, 0)
+            self.progress_bar.setValue(0)
             self.status_label.setText("正在顺序修复 EPUB，请稍候…")
         else:
-            self.progress_bar.setRange(0, 1)
-            self.progress_bar.setValue(1)
+            if self.progress_bar.maximum() == 0:
+                self.progress_bar.setRange(0, 1)
             self._set_list_actions_enabled()
 
     def _show_input_error(self, message: str) -> None:
@@ -369,6 +400,7 @@ class EpubStructuralRepairPage(QWidget):
         for signal, slot in (
             (worker.signals.finished, self._handle_result),
             (worker.signals.failed, self._handle_worker_failure),
+            (worker.signals.progress, self._handle_progress),
         ):
             try:
                 signal.disconnect(slot)
@@ -396,10 +428,30 @@ class EpubStructuralRepairPage(QWidget):
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.result_table.setItem(row, column, item)
 
-    def _set_summary(self, total: int, succeeded: int, failed: int, skipped: int) -> None:
+    def _set_summary(
+        self, total: int, succeeded: int, failed: int, skipped: int, cancelled: int = 0
+    ) -> None:
         self.summary_label.setText(
-            f"总数：{total}　成功：{succeeded}　失败：{failed}　跳过：{skipped}"
+            f"总数：{total}　成功：{succeeded}　失败：{failed}　"
+            f"跳过：{skipped}　取消：{cancelled}"
         )
+
+    @Slot(object)
+    def _handle_progress(self, progress: BatchRepairProgress) -> None:
+        self.progress_bar.setRange(0, max(1, progress.total))
+        self.progress_bar.setValue(progress.completed)
+        self._set_summary(
+            progress.total,
+            progress.succeeded,
+            progress.failed,
+            0,
+            0,
+        )
+        if progress.current_source is not None and self.cancel_button.isEnabled():
+            self.status_label.setText(
+                f"正在处理 {progress.completed + 1}/{progress.total}："
+                f"{progress.current_source.name}"
+            )
 
     @Slot(object)
     def _handle_result(self, result: BatchRepairResult) -> None:
@@ -453,9 +505,16 @@ class EpubStructuralRepairPage(QWidget):
         self.result_details.setPlainText("\n".join(details))
 
         skipped = len(skipped_warnings)
-        total = succeeded + failed + skipped
-        self._set_summary(total, succeeded, failed, skipped)
-        if result.errors and not result.files:
+        cancelled = result.cancelled_count
+        total = max(result.planned_count, succeeded + failed) + skipped
+        self._set_summary(total, succeeded, failed, skipped, cancelled)
+        self.progress_bar.setRange(0, max(1, result.planned_count))
+        self.progress_bar.setValue(len(result.files))
+        if result.cancelled:
+            self.status_label.setText(
+                f"综合修复已取消；已完成 {len(result.files)} 项，未处理 {cancelled} 项。"
+            )
+        elif result.errors and not result.files:
             self.status_label.setText("综合修复失败。")
         elif failed:
             self.status_label.setText("综合修复完成，但存在失败项。")

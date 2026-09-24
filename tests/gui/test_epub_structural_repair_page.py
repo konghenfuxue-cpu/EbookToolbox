@@ -36,12 +36,13 @@ def test_page_initializes_with_safe_defaults(qtbot) -> None:
     assert not page.calibre_check.isChecked()
     assert not page.image_spine_check.isChecked()
     assert not page.start_button.isEnabled()
+    assert not page.cancel_button.isEnabled()
     assert not page.remove_selected_button.isEnabled()
     assert not page.clear_inputs_button.isEnabled()
     assert page.progress_bar.minimum() == 0
     assert page.progress_bar.maximum() == 1
     assert page.result_table.rowCount() == 0
-    assert page.summary_label.text() == "总数：0　成功：0　失败：0　跳过：0"
+    assert page.summary_label.text() == "总数：0　成功：0　失败：0　跳过：0　取消：0"
     assert page.result_details.isReadOnly()
 
 
@@ -168,7 +169,7 @@ def test_background_run_keeps_gui_responsive_and_restores_controls(
     release_worker = threading.Event()
     main_thread = threading.get_ident()
 
-    def repair_in_background(request):
+    def repair_in_background(request, **kwargs):
         assert threading.get_ident() != main_thread
         assert request.inputs == (source,)
         worker_started.set()
@@ -184,6 +185,7 @@ def test_background_run_keeps_gui_responsive_and_restores_controls(
 
     assert page._worker is not None
     assert page.progress_bar.maximum() == 0
+    assert page.cancel_button.isEnabled()
     controls = (
         page.add_epub_button,
         page.add_folder_button,
@@ -213,6 +215,7 @@ def test_background_run_keeps_gui_responsive_and_restores_controls(
     assert page._worker is None
     assert all(control.isEnabled() for control in controls)
     assert page.progress_bar.maximum() == 1
+    assert not page.cancel_button.isEnabled()
     assert page.status_label.text() == "综合修复完成。"
 
 
@@ -227,7 +230,7 @@ def test_result_table_renders_success_failure_warning_and_summary(
     skipped_source = tmp_path / "notes.txt"
     page.add_inputs((good_source, bad_source))
 
-    def mixed_result(_request):
+    def mixed_result(_request, **_kwargs):
         good_output = tmp_path / "good_repaired.epub"
         bad_output = tmp_path / "bad_repaired.epub"
         good = RepairResult(
@@ -273,7 +276,7 @@ def test_result_table_renders_success_failure_warning_and_summary(
     assert "[invalid_container] container.xml 无效" in _cell_text(page, 1, 6)
     assert _cell_text(page, 2, 0) == str(skipped_source)
     assert _cell_text(page, 2, 1) == "跳过"
-    assert page.summary_label.text() == "总数：3　成功：1　失败：1　跳过：1"
+    assert page.summary_label.text() == "总数：3　成功：1　失败：1　跳过：1　取消：0"
     assert page.status_label.text() == "综合修复完成，但存在失败项。"
     details = page.result_details.toPlainText()
     assert "[language_added] (book.opf) 已补充语言" in details
@@ -291,7 +294,7 @@ def test_background_exception_restores_page_and_displays_structured_error(
     source = tmp_path / "source.epub"
     page.add_inputs((source,))
 
-    def raise_unexpectedly(_request):
+    def raise_unexpectedly(_request, **_kwargs):
         raise RuntimeError("worker exploded")
 
     monkeypatch.setattr(page_module, "repair_epub_batch", raise_unexpectedly)
@@ -309,5 +312,48 @@ def test_background_exception_restores_page_and_displays_structured_error(
     assert page.result_table.rowCount() == 1
     assert _cell_text(page, 0, 1) == "失败"
     assert "[unexpected_error] worker exploded" in _cell_text(page, 0, 6)
-    assert page.summary_label.text() == "总数：1　成功：0　失败：1　跳过：0"
+    assert page.summary_label.text() == "总数：1　成功：0　失败：1　跳过：0　取消：0"
     assert "[unexpected_error] worker exploded" in page.result_details.toPlainText()
+
+
+def test_cancel_button_requests_safe_stop_and_renders_cancelled_count(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    page = EpubStructuralRepairPage()
+    qtbot.addWidget(page)
+    page.show()
+    sources = (tmp_path / "a.epub", tmp_path / "b.epub")
+    page.add_inputs(sources)
+    worker_started = threading.Event()
+    release_current = threading.Event()
+
+    def cancellable_batch(request, *, progress_callback, should_cancel):
+        progress_callback(page_module.BatchRepairProgress(2, 0, 0, 0, sources[0]))
+        worker_started.set()
+        assert release_current.wait(timeout=5)
+        output = tmp_path / "a_repaired.epub"
+        repair = RepairResult(source=sources[0], output=output, success=True)
+        result = BatchRepairResult(
+            files=[FileRepairResult(sources[0], output, repair)], planned_count=2
+        )
+        result.cancelled = should_cancel()
+        return result
+
+    monkeypatch.setattr(page_module, "repair_epub_batch", cancellable_batch)
+
+    qtbot.mouseClick(page.start_button, Qt.MouseButton.LeftButton)
+    qtbot.waitUntil(worker_started.is_set, timeout=5000)
+    qtbot.waitUntil(lambda: page.progress_bar.maximum() == 2, timeout=1000)
+    assert page.status_label.text().startswith("正在处理 1/2")
+
+    qtbot.mouseClick(page.cancel_button, Qt.MouseButton.LeftButton)
+    assert not page.cancel_button.isEnabled()
+    assert page.status_label.text().startswith("正在取消")
+
+    with qtbot.waitSignal(page.repair_finished, timeout=5000):
+        release_current.set()
+
+    assert page.status_label.text() == "综合修复已取消；已完成 1 项，未处理 1 项。"
+    assert page.summary_label.text() == "总数：2　成功：1　失败：0　跳过：0　取消：1"
+    assert page.progress_bar.maximum() == 2
+    assert page.progress_bar.value() == 1
