@@ -7,6 +7,7 @@ import os
 import posixpath
 import re
 import tempfile
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from urllib.parse import unquote, urlsplit
 from xml.etree import ElementTree as ET
@@ -24,10 +25,15 @@ from ebook_toolbox.services.epub_image_compressor.archive import (
 from .models import (
     TocEntry,
     TocRepairError,
+    TocRepairProgress,
     TocRepairRequest,
     TocRepairResult,
     TocRepairWarning,
 )
+
+
+class _TocRepairCancelled(Exception):
+    pass
 
 OPF_NS = "http://www.idpf.org/2007/opf"
 DC_NS = "http://purl.org/dc/elements/1.1/"
@@ -829,12 +835,27 @@ def _repair_package(
     return entries, modified, warnings
 
 
-def repair_epub_toc(request: TocRepairRequest) -> TocRepairResult:
+def repair_epub_toc(
+    request: TocRepairRequest,
+    *,
+    progress_callback: Callable[[TocRepairProgress], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
+) -> TocRepairResult:
     """Repair the TOC of one EPUB without modifying the input file."""
 
     source = Path(request.source)
     output = Path(request.output) if request.output is not None else _default_output(source)
     result = TocRepairResult(source=source, output=output)
+
+    def report(stage: str, completed: int) -> None:
+        result.completed_stages = completed
+        if progress_callback is not None:
+            progress_callback(TocRepairProgress(stage, completed, result.total_stages))
+
+    def check_cancelled() -> None:
+        if should_cancel is not None and should_cancel():
+            raise _TocRepairCancelled
+
     try:
         if not source.is_file() or source.suffix.lower() != ".epub":
             raise _RepairFailure("invalid_source", "Source must be an existing .epub file", source)
@@ -853,15 +874,22 @@ def repair_epub_toc(request: TocRepairRequest) -> TocRepairResult:
         with tempfile.TemporaryDirectory(prefix="ebook_toolbox_toc_") as directory:
             root = Path(directory).resolve() / "unpacked"
             root.mkdir()
+            check_cancelled()
+            report("extracting", 0)
             opf_paths = safe_extract(source, root)
+            result.completed_stages = 1
+            check_cancelled()
             if len(opf_paths) != 1:
                 raise _RepairFailure(
                     "multiple_renditions_unsupported",
                     "EPUBs with multiple package documents are not supported",
                 )
+            report("analyzing", 1)
             entries, modified, warnings = _repair_package(
                 root, opf_paths[0], request.replace_existing
             )
+            result.completed_stages = 2
+            check_cancelled()
             result.entries.extend(entries)
             result.modified_files.extend(modified)
             result.warnings.extend(warnings)
@@ -875,22 +903,32 @@ def repair_epub_toc(request: TocRepairRequest) -> TocRepairResult:
                 temporary_identity = os.fstat(temporary_file.fileno())
                 with temporary_file:
                     ensure_owned_temporary(temporary_output, temporary_identity)
+                    report("building", 2)
                     build_epub(root, temporary_file)
                     ensure_owned_temporary(temporary_output, temporary_identity)
+                    result.completed_stages = 3
+                    check_cancelled()
+                    report("validating", 3)
                     validate_output(temporary_file)
                     ensure_owned_temporary(temporary_output, temporary_identity)
+                    result.completed_stages = 4
+                    check_cancelled()
+                report("publishing", 4)
                 publish_epub(
                     temporary_output,
                     output,
                     overwrite=request.overwrite,
                     temporary_identity=temporary_identity,
                 )
+                report("completed", 5)
             finally:
                 if not temporary_file.closed:
                     temporary_file.close()
                 if temporary_identity is not None:
                     unlink_owned_temporary(temporary_output, temporary_identity)
         result.success = True
+    except _TocRepairCancelled:
+        result.cancelled = True
     except _RepairFailure as exc:
         result.errors.append(TocRepairError(exc.code, str(exc), exc.path))
     except ArchiveError as exc:

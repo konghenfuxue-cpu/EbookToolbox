@@ -8,6 +8,7 @@ from PySide6.QtCore import Qt, QTimer
 from ebook_toolbox.services.epub_toc_repair import (
     TocEntry,
     TocRepairError,
+    TocRepairProgress,
     TocRepairResult,
     TocRepairWarning,
 )
@@ -24,6 +25,7 @@ def test_page_initializes_with_safe_defaults(qtbot) -> None:
     assert page.output_edit.text() == ""
     assert page.replace_existing_check.isChecked()
     assert page.start_button.isEnabled()
+    assert not page.cancel_button.isEnabled()
     assert page.progress_bar.minimum() == 0
     assert page.progress_bar.maximum() == 1
     assert page.output_result.isReadOnly()
@@ -96,9 +98,10 @@ def test_background_success_disables_controls_then_renders_result(
     release_worker = threading.Event()
     main_thread = threading.get_ident()
 
-    def successful_repair(request):
+    def successful_repair(request, **kwargs):
         assert threading.get_ident() != main_thread
         assert request.output is None
+        kwargs["progress_callback"](TocRepairProgress("analyzing", 1, 5))
         worker_started.set()
         assert release_worker.wait(timeout=5)
         return TocRepairResult(
@@ -131,7 +134,8 @@ def test_background_success_disables_controls_then_renders_result(
     qtbot.mouseClick(page.start_button, Qt.MouseButton.LeftButton)
     qtbot.waitUntil(worker_started.is_set, timeout=5000)
     assert page._worker is not None
-    assert page.progress_bar.maximum() == 0
+    assert page.progress_bar.maximum() == 5
+    assert page.cancel_button.isEnabled()
     for control in (
         page.source_edit,
         page.source_button,
@@ -151,6 +155,7 @@ def test_background_success_disables_controls_then_renders_result(
 
     assert completed.args[0].success
     assert page._worker is None
+    assert not page.cancel_button.isEnabled()
     for control in (
         page.source_edit,
         page.source_button,
@@ -178,7 +183,7 @@ def test_failure_renders_structured_errors_and_warnings(qtbot, tmp_path, monkeyp
     source.write_bytes(b"input")
     page.source_edit.setText(str(source))
 
-    def failed_repair(request):
+    def failed_repair(request, **_kwargs):
         return TocRepairResult(
             source=request.source,
             output=tmp_path / "source_toc_fixed.epub",
@@ -200,3 +205,43 @@ def test_failure_renders_structured_errors_and_warnings(qtbot, tmp_path, monkeyp
     summary = page.result_summary.toPlainText()
     assert "[existing_toc_unusable] 原目录不可用" in summary
     assert "[chapters_not_recognized] 无法可靠识别章节" in summary
+
+
+def test_cancel_requests_cooperative_stop_and_renders_cancelled_result(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    page = EpubTocRepairPage()
+    qtbot.addWidget(page)
+    page.show()
+    source = tmp_path / "source.epub"
+    source.write_bytes(b"input")
+    page.source_edit.setText(str(source))
+    safe_stage = threading.Event()
+
+    def cancellable_repair(request, *, progress_callback, should_cancel):
+        progress_callback(TocRepairProgress("analyzing", 1, 5))
+        safe_stage.set()
+        while not should_cancel():
+            threading.Event().wait(0.01)
+        return TocRepairResult(
+            source=request.source,
+            output=tmp_path / "source_toc_fixed.epub",
+            completed_stages=2,
+            cancelled=True,
+        )
+
+    monkeypatch.setattr(page_module, "repair_epub_toc", cancellable_repair)
+
+    qtbot.mouseClick(page.start_button, Qt.MouseButton.LeftButton)
+    qtbot.waitUntil(safe_stage.is_set, timeout=5000)
+    assert page.cancel_button.isEnabled()
+    qtbot.mouseClick(page.cancel_button, Qt.MouseButton.LeftButton)
+
+    with qtbot.waitSignal(page.repair_finished, timeout=5000) as completed:
+        pass
+
+    assert completed.args[0].cancelled
+    assert not page.cancel_button.isEnabled()
+    assert page.progress_bar.value() == 2
+    assert "已完成 2/5 个阶段" in page.status_label.text()
+    assert "原文件和已有输出未被修改" in page.result_summary.toPlainText()

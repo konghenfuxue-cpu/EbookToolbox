@@ -48,6 +48,13 @@ class TocRepairRequest:
     replace_existing: bool = True
 
 
+@dataclass(frozen=True, slots=True)
+class TocRepairProgress:
+    stage: str
+    completed: int
+    total: int = 5
+
+
 @dataclass(slots=True)
 class TocRepairResult:
     """Structured outcome of a single-book TOC repair."""
@@ -59,4 +66,7 @@ class TocRepairResult:
     modified_files: list[Path] = field(default_factory=list)
     warnings: list[TocRepairWarning] = field(default_factory=list)
     errors: list[TocRepairError] = field(default_factory=list)
+    completed_stages: int = 0
+    total_stages: int = 5
+    cancelled: bool = False
 
