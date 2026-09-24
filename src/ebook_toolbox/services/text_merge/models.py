@@ -21,6 +21,16 @@ class TextMergeRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class TextMergeProgress:
+    total: int
+    completed: int
+    succeeded: int
+    failed: int
+    skipped: int
+    current_source: Path | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class MergedTextFile:
     author: str
     output: Path
@@ -36,10 +46,19 @@ class TextMergeResult:
     skipped_count: int = 0
     warnings: list[TextMergeIssue] = field(default_factory=list)
     errors: list[TextMergeIssue] = field(default_factory=list)
+    planned_count: int = 0
+    processed_count: int = 0
+    failed_source_count: int = 0
+    skipped_source_count: int = 0
+    cancelled: bool = False
 
     @property
     def success(self) -> bool:
-        return bool(self.files) and not self.errors
+        return bool(self.files) and not self.cancelled and not self.errors
+
+    @property
+    def cancelled_count(self) -> int:
+        return max(0, self.planned_count - self.processed_count) if self.cancelled else 0
 
     @property
     def source_count(self) -> int:
@@ -49,6 +68,7 @@ class TextMergeResult:
 __all__ = [
     "MergedTextFile",
     "TextMergeIssue",
+    "TextMergeProgress",
     "TextMergeRequest",
     "TextMergeResult",
 ]

@@ -6,9 +6,16 @@ import os
 import re
 import tempfile
 from collections import defaultdict
+from collections.abc import Callable
 from pathlib import Path
 
-from .models import MergedTextFile, TextMergeIssue, TextMergeRequest, TextMergeResult
+from .models import (
+    MergedTextFile,
+    TextMergeIssue,
+    TextMergeProgress,
+    TextMergeRequest,
+    TextMergeResult,
+)
 
 _AUTHOR_PATTERN = re.compile(r"^\[([^\]]+)\]")
 _NUMBER_PATTERN = re.compile(r"(\d+)")
@@ -68,7 +75,12 @@ def _publish_text(temporary: Path, output: Path, overwrite: bool) -> None:
     temporary.unlink()
 
 
-def merge_author_texts(request: TextMergeRequest) -> TextMergeResult:
+def merge_author_texts(
+    request: TextMergeRequest,
+    *,
+    progress_callback: Callable[[TextMergeProgress], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
+) -> TextMergeResult:
     """Merge ``[author] title.txt`` files into independently published UTF-8 files."""
 
     source_directory = Path(request.source_directory)
@@ -110,6 +122,30 @@ def merge_author_texts(request: TextMergeRequest) -> TextMergeResult:
         )
         return result
 
+    result.planned_count = sum(len(paths) for paths in grouped.values())
+    completed = 0
+    succeeded = 0
+    failed = 0
+    skipped = 0
+
+    def report(current_source: Path | None = None) -> None:
+        result.processed_count = completed
+        result.failed_source_count = failed
+        result.skipped_source_count = skipped
+        if progress_callback is not None:
+            progress_callback(
+                TextMergeProgress(
+                    result.planned_count,
+                    completed,
+                    succeeded,
+                    failed,
+                    skipped,
+                    current_source,
+                )
+            )
+
+    report()
+
     try:
         output_directory.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
@@ -117,25 +153,41 @@ def merge_author_texts(request: TextMergeRequest) -> TextMergeResult:
         return result
 
     for author in sorted(grouped, key=_natural_sort_key):
+        if should_cancel is not None and should_cancel():
+            result.cancelled = True
+            break
+        author_paths = sorted(grouped[author], key=lambda item: _natural_sort_key(item.name))
         output = output_directory / f"{_safe_file_name(author)}合集.txt"
         if output.exists() and not request.overwrite:
             result.errors.append(TextMergeIssue("output_exists", "输出文件已存在", output))
+            completed += len(author_paths)
+            failed += len(author_paths)
+            report()
             continue
 
         sections: list[str] = []
         skipped_empty = 0
-        for path in sorted(grouped[author], key=lambda item: _natural_sort_key(item.name)):
+        for path in author_paths:
+            report(path)
             try:
                 body = format_plain_text(_read_text(path))
             except (OSError, UnicodeError) as exc:
                 result.errors.append(TextMergeIssue(type(exc).__name__, str(exc), path))
+                completed += 1
+                failed += 1
+                report()
                 continue
             if not body:
                 skipped_empty += 1
+                completed += 1
+                skipped += 1
                 result.warnings.append(TextMergeIssue("empty_file", "文件内容为空，已跳过", path))
+                report()
                 continue
             title = _AUTHOR_PATTERN.sub("", path.stem, count=1).strip() or path.stem
             sections.append(f"＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝\n{title}\n＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝\n\n{body}")
+            completed += 1
+            report()
 
         if not sections:
             result.warnings.append(
@@ -159,10 +211,14 @@ def merge_author_texts(request: TextMergeRequest) -> TextMergeResult:
             _publish_text(temporary_path, output, request.overwrite)
         except OSError as exc:
             result.errors.append(TextMergeIssue(type(exc).__name__, str(exc), output))
+            failed += len(sections)
             if temporary_path is not None:
                 temporary_path.unlink(missing_ok=True)
+            report()
             continue
         result.files.append(MergedTextFile(author, output, len(sections), skipped_empty))
+        succeeded += len(sections)
+        report()
     return result
 
 
