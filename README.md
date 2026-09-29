@@ -88,13 +88,15 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```text
 dist/EbookToolbox/EbookToolbox.exe
 dist/EbookToolbox-portable.zip
+dist/EbookToolbox-portable.zip.sha256
 ```
 
 构建中间文件位于 `build/EbookToolbox/`。`build/`、`dist/` 和开发缓存均被 Git 忽略，
 而 `EbookToolbox.spec`、Windows 版本信息和图标源资源需要纳入版本控制。
 
 GitHub Actions 会在 Windows 测试通过后执行同一构建脚本，启动打包后的 EXE 完成
-`--self-test`，并将 `EbookToolbox-portable.zip` 作为保留 14 天的工作流产物上传。
+`--self-test`，并将 `EbookToolbox-portable.zip` 及其 SHA-256 校验文件作为保留 14 天的
+工作流产物上传。
 
 ## 使用 Windows 便携版
 

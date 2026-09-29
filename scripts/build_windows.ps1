@@ -208,7 +208,15 @@ try {
     $buildWorkDirectory = Get-NormalizedPath -Path (Join-Path $projectRoot "build/EbookToolbox")
     $portableDirectory = Get-NormalizedPath -Path (Join-Path $projectRoot "dist/EbookToolbox")
     $zipPath = Get-NormalizedPath -Path (Join-Path $projectRoot "dist/EbookToolbox-portable.zip")
-    $allowedCleanupTargets = @($buildWorkDirectory, $portableDirectory, $zipPath)
+    $checksumPath = Get-NormalizedPath -Path (
+        Join-Path $projectRoot "dist/EbookToolbox-portable.zip.sha256"
+    )
+    $allowedCleanupTargets = @(
+        $buildWorkDirectory,
+        $portableDirectory,
+        $zipPath,
+        $checksumPath
+    )
 
     if (-not $SkipChecks) {
         Invoke-NativeCommand -FilePath $uvCommand.Source -ArgumentList @("sync", "--dev")
@@ -325,6 +333,14 @@ try {
         $archive.Dispose()
     }
 
+    $zipHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    Set-Content `
+        -LiteralPath $checksumPath `
+        -Value ("{0}  {1}" -f $zipHash, (Split-Path -Leaf $zipPath)) `
+        -Encoding utf8 `
+        -NoNewline
+    Assert-RequiredFile -Path $checksumPath -Description "便携版 ZIP SHA-256 校验文件"
+
     $portableBytes = (
         Get-ChildItem -LiteralPath $portableDirectory -Recurse -File |
             Measure-Object -Property Length -Sum
@@ -355,6 +371,8 @@ try {
         $zipBytes,
         ($zipBytes / 1MB)
     )
+    Write-Host "SHA-256：$zipHash"
+    Write-Host "校验文件：$checksumPath"
     exit 0
 }
 catch {
