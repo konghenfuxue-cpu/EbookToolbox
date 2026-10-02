@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - main
+    tags:
+      - 'v*'
   pull_request:
   workflow_dispatch:
 
@@ -38,6 +40,12 @@ jobs:
 
       - name: Install locked dependencies
         run: uv sync --locked --dev
+
+      - name: Validate release versions
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: uv run python scripts/validate_release.py --tag "$env:RELEASE_TAG"
 
       - name: Check formatting and lint
         run: uv run ruff check .
@@ -84,3 +92,38 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version-file: .python-version
+          check-latest: false
+
+      - name: Download verified build and publish stable release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          BUILD_RUN_ID: ${{ github.run_id }}
+          ARTIFACT_NAME: EbookToolbox-windows-portable-${{ github.sha }}
+        run: |
+          gh run download "$env:BUILD_RUN_ID" --name "$env:ARTIFACT_NAME" --dir dist
+          if ($LASTEXITCODE -ne 0) { throw 'Artifact download failed' }
+          python scripts/validate_release.py --tag "$env:RELEASE_TAG" --artifact-directory dist
+          if ($LASTEXITCODE -ne 0) { throw 'Release validation failed' }
+          gh release create "$env:RELEASE_TAG" dist/EbookToolbox-portable.zip dist/EbookToolbox-portable.zip.sha256 --verify-tag --title "EbookToolbox $env:RELEASE_TAG" --generate-notes --latest
+          if ($LASTEXITCODE -ne 0) { throw 'Release publication failed' }

@@ -98,6 +98,12 @@ GitHub Actions 会在 Windows 测试通过后执行同一构建脚本，启动�
 `--self-test`，并将 `EbookToolbox-portable.zip` 及其 SHA-256 校验文件作为保留 14 天的
 工作流产物上传。
 
+正式发布使用 `v主版本.次版本.修订版本` 标签（例如 `v0.1.0`）。推送标签后，CI
+先校验标签与 `pyproject.toml`、应用 `__version__`、Windows 数字和文本版本一致，
+再执行测试、真实构建及 EXE 自检。发布任务下载同次运行的产物，复核 SHA-256，
+然后创建正式 GitHub Release，附带便携 ZIP 和校验文件，并自动生成发布说明。
+版本不一致、校验失败或已有同名 Release 时停止；只有标签触发发布任务。
+
 ## 使用 Windows 便携版
 
 目标电脑不需要安装 Python、uv、PySide6 或 Pillow。解压
