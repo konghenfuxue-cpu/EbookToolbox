@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
-import os
 import re
 import tempfile
 from collections import defaultdict
 from collections.abc import Callable
 from pathlib import Path
+
+from ebook_toolbox.services.text_write_safety import (
+    OwnedTemporary,
+    cleanup_temporary,
+    freeze_path,
+    publish_text,
+    validate_output_plan,
+)
 
 from .models import (
     MergedTextFile,
@@ -62,19 +69,6 @@ def _safe_file_name(name: str) -> str:
     return sanitized or "未命名作者"
 
 
-def _publish_text(temporary: Path, output: Path, overwrite: bool) -> None:
-    if overwrite:
-        os.replace(temporary, output)
-        return
-    try:
-        os.link(temporary, output)
-    except FileExistsError:
-        raise
-    except OSError as exc:
-        raise OSError(f"Atomic no-clobber publish failed for {output}: {exc}") from exc
-    temporary.unlink()
-
-
 def merge_author_texts(
     request: TextMergeRequest,
     *,
@@ -83,9 +77,9 @@ def merge_author_texts(
 ) -> TextMergeResult:
     """Merge ``[author] title.txt`` files into independently published UTF-8 files."""
 
-    source_directory = Path(request.source_directory)
+    source_directory = freeze_path(request.source_directory)
     output_directory = (
-        Path(request.output_directory)
+        freeze_path(request.output_directory)
         if request.output_directory is not None
         else source_directory / "EbookToolbox-合集"
     )
@@ -99,7 +93,8 @@ def merge_author_texts(
         return result
 
     grouped: defaultdict[str, list[Path]] = defaultdict(list)
-    for path in source_directory.glob("*.txt"):
+    source_paths = list(source_directory.glob("*.txt"))
+    for path in source_paths:
         match = _AUTHOR_PATTERN.match(path.stem)
         if match is None:
             result.skipped_count += 1
@@ -144,8 +139,23 @@ def merge_author_texts(
                 )
             )
 
+    outputs = {
+        author: output_directory / f"{_safe_file_name(author)}合集.txt" for author in grouped
+    }
+    try:
+        plan = validate_output_plan(source_paths, outputs.values(), overwrite=request.overwrite)
+    except OSError as exc:
+        result.errors.append(
+            TextMergeIssue(
+                getattr(exc, "code", type(exc).__name__),
+                str(exc),
+                getattr(exc, "path", output_directory),
+            )
+        )
+        completed = failed = result.planned_count
+        report()
+        return result
     report()
-
     try:
         output_directory.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
@@ -157,16 +167,11 @@ def merge_author_texts(
             result.cancelled = True
             break
         author_paths = sorted(grouped[author], key=lambda item: _natural_sort_key(item.name))
-        output = output_directory / f"{_safe_file_name(author)}合集.txt"
-        if output.exists() and not request.overwrite:
-            result.errors.append(TextMergeIssue("output_exists", "输出文件已存在", output))
-            completed += len(author_paths)
-            failed += len(author_paths)
-            report()
-            continue
+        output = outputs[author]
 
         sections: list[str] = []
         skipped_empty = 0
+        read_failed = False
         for path in author_paths:
             report(path)
             try:
@@ -175,6 +180,7 @@ def merge_author_texts(
                 result.errors.append(TextMergeIssue(type(exc).__name__, str(exc), path))
                 completed += 1
                 failed += 1
+                read_failed = True
                 report()
                 continue
             if not body:
@@ -185,16 +191,23 @@ def merge_author_texts(
                 report()
                 continue
             title = _AUTHOR_PATTERN.sub("", path.stem, count=1).strip() or path.stem
-            sections.append(f"＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝\n{title}\n＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝\n\n{body}")
+            sections.append(
+                f"＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝\n{title}\n＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝\n\n{body}"
+            )
             completed += 1
             report()
 
+        if read_failed:
+            # A successful subset is not a complete author compilation.
+            failed += len(sections)
+            report()
+            continue
         if not sections:
             result.warnings.append(
                 TextMergeIssue("author_has_no_content", "该作者没有可写入内容", None)
             )
             continue
-        temporary_path: Path | None = None
+        owned_temporary: OwnedTemporary | None = None
         try:
             with tempfile.NamedTemporaryFile(
                 mode="w",
@@ -205,17 +218,25 @@ def merge_author_texts(
                 prefix=f".{_safe_file_name(author)}-",
                 delete=False,
             ) as temporary:
-                temporary_path = Path(temporary.name)
+                owned_temporary = OwnedTemporary.capture(temporary)
                 temporary.write("\n\n\n".join(sections))
                 temporary.write("\n")
-            _publish_text(temporary_path, output, request.overwrite)
+            publish_text(owned_temporary, output, plan=plan)
         except OSError as exc:
-            result.errors.append(TextMergeIssue(type(exc).__name__, str(exc), output))
+            result.errors.append(
+                TextMergeIssue(
+                    getattr(exc, "code", type(exc).__name__), str(exc), getattr(exc, "path", output)
+                )
+            )
             failed += len(sections)
-            if temporary_path is not None:
-                temporary_path.unlink(missing_ok=True)
             report()
             continue
+        finally:
+            cleanup_warning = cleanup_temporary(owned_temporary)
+            if cleanup_warning:
+                result.warnings.append(
+                    TextMergeIssue("temp_cleanup_failed", cleanup_warning, output)
+                )
         result.files.append(MergedTextFile(author, output, len(sections), skipped_empty))
         succeeded += len(sections)
         report()

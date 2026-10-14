@@ -55,6 +55,23 @@ class RepairResult:
     spine_count: int = 0
     warnings: list[RepairWarning] = field(default_factory=list)
     errors: list[RepairError] = field(default_factory=list)
+    internal_validation_status: str = "not_run"
+
+    @property
+    def validation_checks(self) -> tuple[tuple[str, str], ...]:
+        """Record only checks actually performed, not inferred EPUB compliance.
+
+        calibre_status remains compatible with callers of the original API;
+        its 'passed' value means ebook-meta could read metadata, nothing more.
+        """
+        metadata_status = self.calibre_status or "not_run"
+        if metadata_status == "check_failed":
+            metadata_status = "failed"
+        return (
+            ("internal_structure", self.internal_validation_status),
+            ("calibre_metadata", metadata_status),
+            ("epubcheck", "not_run"),
+        )
 
 
 @dataclass(frozen=True, slots=True)

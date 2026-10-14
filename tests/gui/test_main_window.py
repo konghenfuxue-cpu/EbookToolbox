@@ -3,6 +3,11 @@
 from PySide6.QtCore import Qt
 
 from ebook_toolbox.services.epub_image_compressor import CompressionResult
+from ebook_toolbox.services.epub_structural_repair.models import (
+    BatchRepairResult,
+    FileRepairResult,
+    RepairResult,
+)
 from ebook_toolbox.ui.main_window import MainWindow
 from ebook_toolbox.ui.navigation import NAVIGATION_ITEMS
 from ebook_toolbox.ui.pages.detection_report import DetectionReportPage
@@ -67,3 +72,25 @@ def test_completed_task_is_added_to_detection_reports(qtbot, tmp_path) -> None:
 
     assert window.detection_report_page.report_table.rowCount() == 1
     assert window.detection_report_page.report_table.item(0, 1).text() == "EPUB 图片压缩"
+
+
+def test_structural_report_keeps_metadata_and_standard_checks_separate(qtbot, tmp_path) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    source, output = tmp_path / "source.epub", tmp_path / "fixed.epub"
+    repaired = RepairResult(source=source, output=output, success=True, calibre_status="passed")
+    repaired.internal_validation_status = "passed"
+    batch = BatchRepairResult(files=[FileRepairResult(source, output, repaired)])
+
+    window.epub_structural_repair_page.repair_finished.emit(batch)
+
+    entry = window.report_store.entries[0]
+    assert dict(entry.checks) == {
+        "internal_structure": "passed",
+        "calibre_metadata": "passed",
+        "epubcheck": "not_run",
+    }
+    window.detection_report_page.report_table.selectRow(0)
+    details = window.detection_report_page.details.toPlainText()
+    assert "EPUBCheck" in details
+    assert "未运行" in details

@@ -140,7 +140,10 @@ class EpubStructuralRepairPage(QWidget):
         self.recursive_check.setObjectName("structuralRepairRecursive")
         self.overwrite_check = QCheckBox("覆盖已有输出")
         self.overwrite_check.setObjectName("structuralRepairOverwrite")
-        self.calibre_check = QCheckBox("运行 Calibre 外部检查")
+        self.calibre_check = QCheckBox("尝试 Calibre 元数据读取")
+        self.calibre_check.setToolTip(
+            "仅运行 ebook-meta 读取元数据，不等同 EPUBCheck 或完整 EPUB 标准校验。"
+        )
         self.calibre_check.setObjectName("structuralRepairCalibreCheck")
         self.image_spine_check = QCheckBox("将 spine 直接图片包装为 XHTML")
         self.image_spine_check.setObjectName("structuralRepairImageSpineWrap")
@@ -454,10 +457,24 @@ class EpubStructuralRepairPage(QWidget):
                 len(file_result.warnings),
                 error_text,
             )
-            if file_result.warnings or file_result.errors:
-                details.append(f"{file_result.source}：")
-                details.extend(_format_issue(warning) for warning in file_result.warnings)
-                details.extend(_format_issue(error) for error in file_result.errors)
+            details.append(f"{file_result.source}：")
+            check_names = {
+                "internal_structure": "内部结构检查",
+                "calibre_metadata": "Calibre 元数据读取",
+                "epubcheck": "EPUBCheck 标准校验",
+            }
+            check_statuses = {
+                "passed": "通过",
+                "failed": "失败",
+                "not_run": "未执行",
+                "not_installed": "未安装（未执行）",
+            }
+            details.extend(
+                f"{check_names.get(name, name)}：{check_statuses.get(state, state)}"
+                for name, state in repair.validation_checks
+            )
+            details.extend(_format_issue(warning) for warning in file_result.warnings)
+            details.extend(_format_issue(error) for error in file_result.errors)
 
         skipped_warnings = [
             warning for warning in result.warnings if warning.code in _SKIPPED_WARNING_CODES

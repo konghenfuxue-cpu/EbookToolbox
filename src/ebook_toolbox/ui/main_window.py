@@ -92,6 +92,7 @@ class MainWindow(QMainWindow):
         success: bool,
         warnings: Iterable[object],
         errors: Iterable[object],
+        checks: Iterable[tuple[str, str]] = (),
     ) -> None:
         self.report_store.add(
             ReportEntry(
@@ -102,6 +103,7 @@ class MainWindow(QMainWindow):
                 success=success,
                 warnings=tuple(self._format_issue(issue) for issue in warnings),
                 errors=tuple(self._format_issue(issue) for issue in errors),
+                checks=tuple(checks),
             )
         )
 
@@ -134,6 +136,7 @@ class MainWindow(QMainWindow):
                 success=bool(getattr(file_result, "success", False)),
                 warnings=getattr(file_result, "warnings", ()),
                 errors=getattr(file_result, "errors", ()),
+                checks=getattr(file_result.result, "validation_checks", ()),
             )
         warnings = getattr(result, "warnings", ())
         errors = getattr(result, "errors", ())

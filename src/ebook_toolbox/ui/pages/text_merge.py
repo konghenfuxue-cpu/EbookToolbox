@@ -91,7 +91,7 @@ class TextMergePage(QWidget):
         form.addRow("输出文件夹", output_row)
         layout.addLayout(form)
 
-        self.overwrite_check = QCheckBox("允许覆盖已有合集文件")
+        self.overwrite_check = QCheckBox("允许覆盖已有合集文件（始终保护输入原稿）")
         self.overwrite_check.setObjectName("textMergeOverwrite")
         layout.addWidget(self.overwrite_check)
 
@@ -149,7 +149,7 @@ class TextMergePage(QWidget):
         self.chapter_output_edit.setPlaceholderText("留空时输出为同目录的（卷章版）副本")
         chapter_form.addRow("输出 TXT", self.chapter_output_edit)
         layout.addLayout(chapter_form)
-        self.chapter_overwrite_check = QCheckBox("允许覆盖已有卷章版文件")
+        self.chapter_overwrite_check = QCheckBox("允许覆盖已有卷章版文件（始终保护输入原稿）")
         layout.addWidget(self.chapter_overwrite_check)
         self.chapter_start_button = QPushButton("开始卷章识别")
         self.chapter_start_button.setObjectName("startTextChapterButton")

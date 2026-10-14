@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import posixpath
+import subprocess
 import zipfile
 from pathlib import Path
 from urllib.parse import quote, unquote
@@ -512,6 +513,72 @@ def test_optional_calibre_absence_is_only_a_warning(tmp_path: Path, monkeypatch)
     assert result.success
     assert result.calibre_status == "not_installed"
     assert "calibre_not_installed" in {warning.code for warning in result.warnings}
+
+
+def test_internal_validation_does_not_claim_epubcheck_compliance(tmp_path: Path) -> None:
+    source = tmp_path / "内部 检查.epub"
+    # This fixture lacks full EPUB-required metadata: internal repair is not EPUBCheck.
+    make_epub(source)
+
+    result = repair_epub_structure(RepairRequest(source))
+
+    assert result.success
+    assert dict(result.validation_checks) == {
+        "internal_structure": "passed",
+        "calibre_metadata": "not_run",
+        "epubcheck": "not_run",
+    }
+
+
+def test_invalid_input_does_not_claim_internal_validation_ran(tmp_path: Path) -> None:
+    result = repair_epub_structure(RepairRequest(tmp_path / "missing.epub"))
+
+    assert not result.success
+    assert dict(result.validation_checks)["internal_structure"] == "not_run"
+
+
+def test_internal_validation_failure_is_recorded_before_publish(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "invalid-output.epub"
+    make_epub(source)
+    original = source.read_bytes()
+
+    def reject_output(_temporary):
+        raise repair_module.ArchiveError("controlled output validation failure")
+
+    monkeypatch.setattr(repair_module, "validate_repaired_epub", reject_output)
+    result = repair_epub_structure(RepairRequest(source))
+
+    assert not result.success
+    assert dict(result.validation_checks)["internal_structure"] == "failed"
+    assert not result.output.exists()
+    assert source.read_bytes() == original
+
+
+@pytest.mark.parametrize("returncode,status", [(0, "passed"), (1, "failed")])
+def test_metadata_command_status_is_separate_from_epubcheck(
+    tmp_path: Path, monkeypatch, returncode: int, status: str
+) -> None:
+    source = tmp_path / "元数据 检查.epub"
+    make_epub(source)
+    monkeypatch.setattr(repair_module.shutil, "which", lambda _name: "ebook-meta")
+
+    def run_metadata(command, **_kwargs):
+        # The real repair/publication still runs; only the external process is controlled.
+        assert command[0] == "ebook-meta"
+        assert Path(command[1]).is_file()
+        return subprocess.CompletedProcess(command, returncode, "metadata", "cannot read")
+
+    monkeypatch.setattr(repair_module.subprocess, "run", run_metadata)
+    result = repair_epub_structure(RepairRequest(source, run_calibre_check=True))
+
+    assert result.success  # The optional metadata reader does not gate repair.
+    assert dict(result.validation_checks) == {
+        "internal_structure": "passed",
+        "calibre_metadata": status,
+        "epubcheck": "not_run",
+    }
 
 
 def test_illegal_opf_path_is_renamed_and_container_reference_is_updated(tmp_path: Path) -> None:
