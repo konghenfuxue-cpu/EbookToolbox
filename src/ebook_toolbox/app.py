@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QApplication
 from qt_material import apply_stylesheet
 
 from ebook_toolbox import __version__
+from ebook_toolbox.preferences import PreferencesStore
 from ebook_toolbox.resources import resource_path
 from ebook_toolbox.ui.main_window import MainWindow
 
@@ -26,7 +27,10 @@ def create_application(argv: Sequence[str] | None = None) -> QApplication:
     icon_path = resource_path("app_icon.ico")
     if icon_path.is_file():
         application.setWindowIcon(QIcon(str(icon_path)))
-    apply_stylesheet(application, theme="light_blue.xml")
+    theme = PreferencesStore().load().theme
+    apply_stylesheet(application, theme=f"{theme}_blue.xml")
+    if theme == "light":
+        application.setStyleSheet(application.styleSheet() + "\nQLabel { color: #303840; }")
     return application
 
 
@@ -42,7 +46,7 @@ def packaged_self_test() -> int:
     """Initialize the packaged Qt application and main window, then exit cleanly."""
 
     application = create_application(["EbookToolbox", "--self-test"])
-    window = MainWindow()
+    window = MainWindow(persist_window=False)
     window.show()
     application.processEvents()
     window.close()

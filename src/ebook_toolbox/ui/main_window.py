@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import replace
 from datetime import datetime
 
-from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QStackedWidget, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QMessageBox, QStackedWidget, QWidget
 
+from ebook_toolbox.preferences import PreferencesStore
 from ebook_toolbox.ui.navigation import NAVIGATION_ITEMS, NavigationList
 from ebook_toolbox.ui.pages import (
     DetectionReportPage,
@@ -19,16 +21,27 @@ from ebook_toolbox.ui.pages import (
     TextMergePage,
     WelcomePage,
 )
+from ebook_toolbox.ui.pages.settings import SettingsPage
 
 
 class MainWindow(QMainWindow):
     """Top-level window containing navigation and tool pages."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self, preferences_store: PreferencesStore | None = None, *, persist_window: bool = True
+    ) -> None:
         super().__init__()
+        self.preferences_store = preferences_store or PreferencesStore()
+        self.persist_window = persist_window
         self.setObjectName("mainWindow")
         self.setWindowTitle("电子书工具箱")
         self.resize(1100, 720)
+        preferences = self.preferences_store.load()
+        if preferences.remember_window:
+            area = self.screen().availableGeometry()
+            self.resize(
+                min(preferences.width, area.width()), min(preferences.height, area.height())
+            )
         self.report_store = ReportStore()
 
         central_widget = QWidget()
@@ -65,6 +78,9 @@ class MainWindow(QMainWindow):
             elif title == "检测报告":
                 self.detection_report_page = DetectionReportPage(self.report_store)
                 self.pages.addWidget(self.detection_report_page)
+            elif title == "设置":
+                self.settings_page = SettingsPage(self.preferences_store)
+                self.pages.addWidget(self.settings_page)
             else:
                 self.pages.addWidget(PlaceholderPage(title))
 
@@ -74,6 +90,23 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central_widget)
 
         self.statusBar().showMessage("就绪")
+
+    def closeEvent(self, event) -> None:
+        if self.persist_window:
+            value = self.preferences_store.load()
+            if value.remember_window and not self.preferences_store.warning:
+                size = self.normalGeometry().size() if self.isMaximized() else self.size()
+                try:
+                    self.preferences_store.save(
+                        replace(
+                            value,
+                            width=max(800, min(10000, size.width())),
+                            height=max(600, min(10000, size.height())),
+                        )
+                    )
+                except OSError as error:
+                    QMessageBox.warning(self, "窗口偏好保存失败", str(error))
+        super().closeEvent(event)
 
     @staticmethod
     def _format_issue(issue: object) -> str:
