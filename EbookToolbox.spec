@@ -1,6 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 from pathlib import Path
+from datetime import datetime
+import json
+import subprocess
 
 from PyInstaller.utils.hooks import collect_data_files
 
@@ -10,6 +13,22 @@ SOURCE_ROOT = PROJECT_ROOT / "src"
 RESOURCE_ROOT = SOURCE_ROOT / "ebook_toolbox" / "resources"
 
 datas = collect_data_files("qt_material")
+identity_path = Path(workpath) / "build-info.json"
+identity_path.parent.mkdir(parents=True, exist_ok=True)
+try:
+    revision = subprocess.check_output(
+        ["git", "-C", str(PROJECT_ROOT), "rev-parse", "--short=12", "HEAD"], text=True
+    ).strip()
+    dirty = bool(subprocess.check_output(
+        ["git", "-C", str(PROJECT_ROOT), "status", "--porcelain"], text=True
+    ).strip())
+except (OSError, subprocess.SubprocessError):
+    revision, dirty = "unknown", True
+identity_path.write_text(json.dumps({
+    "revision": revision, "dirty": dirty,
+    "built_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+}), encoding="utf-8")
+datas += [(str(identity_path), "ebook_toolbox")]
 datas += [
     (str(RESOURCE_ROOT / "app_icon.ico"), "ebook_toolbox/resources"),
     (str(RESOURCE_ROOT / "app_icon.svg"), "ebook_toolbox/resources"),

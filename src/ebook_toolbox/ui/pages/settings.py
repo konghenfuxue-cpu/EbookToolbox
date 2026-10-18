@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from ebook_toolbox import __version__
+from ebook_toolbox.build_info import build_description
 from ebook_toolbox.preferences import Preferences, PreferencesStore
 
 
@@ -27,6 +28,7 @@ class SettingsPage(QWidget):
         self.store = store
         self.setObjectName("settingsPage")
         value = store.load()
+        self._saved_options = (value.theme, value.remember_window)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(32, 24, 32, 24)
         title = QLabel("设置")
@@ -67,6 +69,7 @@ class SettingsPage(QWidget):
         runtime = Path(sys.executable) if getattr(sys, "frozen", False) else Path(sys.argv[0])
         for text in (
             f"EbookToolbox · 版本 {__version__}",
+            build_description(),
             f"运行位置：{runtime.resolve()}",
             f"配置保存位置：{store.path}",
             "内部结构检查：由各工具按其检查范围执行，不代表完整标准合规。",
@@ -82,8 +85,40 @@ class SettingsPage(QWidget):
         layout.addStretch()
         self.save_button.clicked.connect(self._save)
         self.reset_button.clicked.connect(self._reset)
+        self.theme_combo.currentIndexChanged.connect(self._options_changed)
+        self.remember_checkbox.toggled.connect(self._options_changed)
 
-    def _save(self) -> None:
+    def has_unsaved_changes(self) -> bool:
+        options = (self.theme_combo.currentData(), self.remember_checkbox.isChecked())
+        return options != self._saved_options
+
+    def _options_changed(self) -> None:
+        message = "有未保存的设置更改。" if self.has_unsaved_changes() else "设置与已保存值一致。"
+        self.status.setText(message)
+
+    def confirm_leave(self) -> bool:
+        if not self.has_unsaved_changes():
+            return True
+        answer = QMessageBox.question(
+            self,
+            "设置尚未保存",
+            "是否保存设置更改？",
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer == QMessageBox.StandardButton.Save:
+            return self._save()
+        if answer == QMessageBox.StandardButton.Discard:
+            theme, remember = self._saved_options
+            self.theme_combo.setCurrentIndex(1 if theme == "dark" else 0)
+            self.remember_checkbox.setChecked(remember)
+            self._options_changed()
+            return True
+        return False
+
+    def _save(self) -> bool:
         current = self.store.load()
         value = Preferences(
             self.theme_combo.currentData(),
@@ -95,8 +130,11 @@ class SettingsPage(QWidget):
             self.store.save(value)
         except OSError as error:
             self.status.setText(f"设置保存失败，未确认保存成功：{error}")
+            return False
         else:
+            self._saved_options = (value.theme, value.remember_window)
             self.status.setText("设置已保存。主题下次启动生效；窗口大小在正常关闭时保存。")
+            return True
 
     def _reset(self) -> None:
         answer = QMessageBox.question(
@@ -113,6 +151,7 @@ class SettingsPage(QWidget):
         except OSError as error:
             self.status.setText(f"恢复默认设置失败：{error}")
         else:
+            self._saved_options = ("light", False)
             self.theme_combo.setCurrentIndex(0)
             self.remember_checkbox.setChecked(False)
             self.status.setText("已恢复默认设置。主题及默认窗口大小下次启动生效。")

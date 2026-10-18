@@ -84,14 +84,28 @@ class MainWindow(QMainWindow):
             else:
                 self.pages.addWidget(PlaceholderPage(title))
 
-        self.navigation.page_changed.connect(self.pages.setCurrentIndex)
+        self.navigation.page_changed.connect(self._change_page)
         central_layout.addWidget(self.navigation)
         central_layout.addWidget(self.pages, 1)
         self.setCentralWidget(central_widget)
 
         self.statusBar().showMessage("就绪")
 
+    def _change_page(self, index: int) -> None:
+        if (
+            self.pages.currentWidget() is self.settings_page
+            and not self.settings_page.confirm_leave()
+        ):
+            self.navigation.blockSignals(True)
+            self.navigation.setCurrentRow(self.pages.currentIndex())
+            self.navigation.blockSignals(False)
+            return
+        self.pages.setCurrentIndex(index)
+
     def closeEvent(self, event) -> None:
+        if not self.settings_page.confirm_leave():
+            event.ignore()
+            return
         if self.persist_window:
             value = self.preferences_store.load()
             if value.remember_window and not self.preferences_store.warning:
