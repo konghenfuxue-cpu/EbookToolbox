@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import io
-import os
 import posixpath
 import re
 import sys
@@ -81,8 +80,16 @@ def add_to_nav(data: bytes, nav_path: str, page_path: str) -> tuple[bytes, bool]
         matches: list[tuple[ET.Element, ET.Element]] = []
         for li in matching_descendants(target, "li"):
             anchor = next((child for child in li if local_name(child.tag) == "a"), None)
-            href = ((anchor.get("href") if anchor is not None else "") or "").split("#", 1)[0]
-            if href and posixpath.normpath(posixpath.join(posixpath.dirname(nav_path), href)) == page_path:
+            href = ((anchor.get("href") if anchor is not None else "") or "").split(
+                "#", 1
+            )[0]
+            if (
+                href
+                and posixpath.normpath(
+                    posixpath.join(posixpath.dirname(nav_path), href)
+                )
+                == page_path
+            ):
                 matches.append((li, anchor))
         if matches:
             keep_li, keep_anchor = matches[0]
@@ -96,7 +103,11 @@ def add_to_nav(data: bytes, nav_path: str, page_path: str) -> tuple[bytes, bool]
                 if parent is not None and duplicate_li in list(parent):
                     parent.remove(duplicate_li)
             return xml_bytes(root), True
-        namespace = target.tag[: target.tag.index("}") + 1] if target.tag.startswith("{") else ""
+        namespace = (
+            target.tag[: target.tag.index("}") + 1]
+            if target.tag.startswith("{")
+            else ""
+        )
         li = ET.Element(f"{namespace}li")
         a = ET.SubElement(li, f"{namespace}a", {"href": rel})
         a.text = NAV_TITLE
@@ -118,14 +129,24 @@ def add_to_ncx(data: bytes, ncx_path: str, page_path: str) -> tuple[bytes, bool]
     parent_map = {child: parent for parent in root.iter() for child in parent}
     matches: list[tuple[ET.Element, ET.Element]] = []
     for old_point in matching_descendants(nav_map, "navPoint"):
-        content = next((child for child in old_point if local_name(child.tag) == "content"), None)
-        src = ((content.get("src") if content is not None else "") or "").split("#", 1)[0]
-        if src and posixpath.normpath(posixpath.join(posixpath.dirname(ncx_path), src)) == page_path:
+        content = next(
+            (child for child in old_point if local_name(child.tag) == "content"), None
+        )
+        src = ((content.get("src") if content is not None else "") or "").split("#", 1)[
+            0
+        ]
+        if (
+            src
+            and posixpath.normpath(posixpath.join(posixpath.dirname(ncx_path), src))
+            == page_path
+        ):
             matches.append((old_point, content))
     if matches:
         keep_point, keep_content = matches[0]
         keep_content.set("src", rel)
-        label = next((element for element in matching_descendants(keep_point, "text")), None)
+        label = next(
+            (element for element in matching_descendants(keep_point, "text")), None
+        )
         if label is not None:
             label.text = NAV_TITLE
         for child in list(keep_point):
@@ -136,12 +157,18 @@ def add_to_ncx(data: bytes, ncx_path: str, page_path: str) -> tuple[bytes, bool]
             if parent is not None and duplicate_point in list(parent):
                 parent.remove(duplicate_point)
         return xml_bytes(root), True
-    namespace = nav_map.tag[: nav_map.tag.index("}") + 1] if nav_map.tag.startswith("{") else ""
-    point = ET.Element(f"{namespace}navPoint", {"id": "nav-resource-share", "playOrder": "1"})
+    namespace = (
+        nav_map.tag[: nav_map.tag.index("}") + 1] if nav_map.tag.startswith("{") else ""
+    )
+    point = ET.Element(
+        f"{namespace}navPoint", {"id": "nav-resource-share", "playOrder": "1"}
+    )
     label = ET.SubElement(point, f"{namespace}navLabel")
     ET.SubElement(label, f"{namespace}text").text = NAV_TITLE
     ET.SubElement(point, f"{namespace}content", {"src": rel})
-    for old_point in (child for child in nav_map if local_name(child.tag) == "navPoint"):
+    for old_point in (
+        child for child in nav_map if local_name(child.tag) == "navPoint"
+    ):
         old_order = old_point.get("playOrder")
         if old_order and old_order.isdigit():
             old_point.set("playOrder", str(int(old_order) + 1))
@@ -157,7 +184,11 @@ def reading_order_insert_index(
     names: set[str],
 ) -> int:
     """Place the new page after cover/front matter and before the first chapter."""
-    items = {item.get("id"): item for item in manifest.findall(f"{{{OPF_NS}}}item") if item.get("id")}
+    items = {
+        item.get("id"): item
+        for item in manifest.findall(f"{{{OPF_NS}}}item")
+        if item.get("id")
+    }
     refs = spine.findall(f"{{{OPF_NS}}}itemref")
     cover_index = -1
     chapter_index: int | None = None
@@ -170,17 +201,29 @@ def reading_order_insert_index(
         full = posixpath.normpath(posixpath.join(opf_dir, href))
         label = " ".join((item.get("id", ""), href, item.get("properties", ""))).lower()
         sample = b""
-        if full in names and (item.get("media-type") or "") in {"application/xhtml+xml", "text/html"}:
+        if full in names and (item.get("media-type") or "") in {
+            "application/xhtml+xml",
+            "text/html",
+        }:
             try:
                 sample = zin.read(full)[:131072].lower()
             except (KeyError, OSError):
                 pass
 
-        is_cover = bool(re.search(r"(^|[^a-z])(cover|titlepage|coverpage)([^a-z]|$)", label)) or any(
+        is_cover = bool(
+            re.search(r"(^|[^a-z])(cover|titlepage|coverpage)([^a-z]|$)", label)
+        ) or any(
             token in sample
-            for token in (b'epub:type="cover"', b"epub:type='cover'", b'name="cover"', b"name='cover'")
+            for token in (
+                b'epub:type="cover"',
+                b"epub:type='cover'",
+                b'name="cover"',
+                b"name='cover'",
+            )
         )
-        is_chapter = bool(re.search(r"(^|[^a-z])(chapter|chap|ch\d+)([^a-z]|$)", label)) or any(
+        is_chapter = bool(
+            re.search(r"(^|[^a-z])(chapter|chap|ch\d+)([^a-z]|$)", label)
+        ) or any(
             token in sample
             for token in (
                 b'epub:type="chapter"',
@@ -245,7 +288,11 @@ def process(epub: Path) -> tuple[str, str]:
                 existing_item = ET.SubElement(
                     manifest,
                     f"{{{OPF_NS}}}item",
-                    {"id": item_id, "href": PAGE_NAME, "media-type": "application/xhtml+xml"},
+                    {
+                        "id": item_id,
+                        "href": PAGE_NAME,
+                        "media-type": "application/xhtml+xml",
+                    },
                 )
             else:
                 item_id = existing_item.get("id") or unique_id(opf, PAGE_ID)
@@ -253,9 +300,16 @@ def process(epub: Path) -> tuple[str, str]:
                 existing_item.set("href", PAGE_NAME)
                 existing_item.set("media-type", "application/xhtml+xml")
 
-            if not any(ref.get("idref") == item_id for ref in spine.findall(f"{{{OPF_NS}}}itemref")):
-                insert_at = reading_order_insert_index(zin, manifest, spine, opf_dir, names)
-                spine.insert(insert_at, ET.Element(f"{{{OPF_NS}}}itemref", {"idref": item_id}))
+            if not any(
+                ref.get("idref") == item_id
+                for ref in spine.findall(f"{{{OPF_NS}}}itemref")
+            ):
+                insert_at = reading_order_insert_index(
+                    zin, manifest, spine, opf_dir, names
+                )
+                spine.insert(
+                    insert_at, ET.Element(f"{{{OPF_NS}}}itemref", {"idref": item_id})
+                )
 
             replacements: dict[str, bytes] = {opf_path: xml_bytes(opf), page_path: PAGE}
             nav_added = False
@@ -263,14 +317,20 @@ def process(epub: Path) -> tuple[str, str]:
                 href = item.get("href")
                 if not href:
                     continue
-                full = posixpath.normpath(posixpath.join(opf_dir, href.split("#", 1)[0]))
+                full = posixpath.normpath(
+                    posixpath.join(opf_dir, href.split("#", 1)[0])
+                )
                 props = (item.get("properties") or "").split()
                 media = item.get("media-type") or ""
                 if "nav" in props and full in names:
-                    replacements[full], changed = add_to_nav(zin.read(full), full, page_path)
+                    replacements[full], changed = add_to_nav(
+                        zin.read(full), full, page_path
+                    )
                     nav_added = nav_added or changed
                 if media == "application/x-dtbncx+xml" and full in names:
-                    replacements[full], changed = add_to_ncx(zin.read(full), full, page_path)
+                    replacements[full], changed = add_to_ncx(
+                        zin.read(full), full, page_path
+                    )
                     nav_added = nav_added or changed
 
             OUTPUT.mkdir(parents=True, exist_ok=True)
@@ -298,14 +358,21 @@ def process(epub: Path) -> tuple[str, str]:
         with zipfile.ZipFile(out, "r") as check:
             bad = check.testzip()
             first = check.infolist()[0]
-            if bad or first.filename != "mimetype" or first.compress_type != zipfile.ZIP_STORED:
+            if (
+                bad
+                or first.filename != "mimetype"
+                or first.compress_type != zipfile.ZIP_STORED
+            ):
                 out.unlink(missing_ok=True)
                 return "失败", f"输出验证失败：{bad or 'mimetype 包装异常'}"
             if page_path not in check.namelist():
                 out.unlink(missing_ok=True)
                 return "失败", "输出中未找到资源页"
         action = "已更新资源页" if page_path in names else "已添加资源页"
-        return "完成", f"{action}；目录项：{'已确认' if nav_added else '未找到可更新的导航文档'}"
+        return (
+            "完成",
+            f"{action}；目录项：{'已确认' if nav_added else '未找到可更新的导航文档'}",
+        )
     except Exception as exc:
         return "失败", f"{type(exc).__name__}: {exc}"
 
@@ -334,7 +401,7 @@ def main() -> int:
         print(f"{status}\t{epub.name}\t{detail}")
         if status != "完成":
             failures += 1
-    print(f"合计\t{len(files)} 本\t成功 {len(files)-failures}，跳过或失败 {failures}")
+    print(f"合计\t{len(files)} 本\t成功 {len(files) - failures}，跳过或失败 {failures}")
     return 1 if failures else 0
 
 
