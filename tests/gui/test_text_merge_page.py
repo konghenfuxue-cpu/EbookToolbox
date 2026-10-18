@@ -1,3 +1,5 @@
+import hashlib
+import json
 import threading
 from pathlib import Path
 
@@ -151,3 +153,54 @@ def test_merge_cancel_waits_for_current_author_and_renders_remaining_count(
     assert page.progress_bar.maximum() == 2
     assert page.progress_bar.value() == 1
     assert page.merge_summary_label.text() == "总数：2　成功：1　失败：0　跳过：0　取消：1"
+
+
+def _file_snapshot(path):
+    info = path.stat()
+    return [hashlib.sha256(path.read_bytes()).hexdigest(), info.st_dev, info.st_ino]
+
+
+def test_T25_gui_rejects_source_overwrite_through_real_service(qtbot, tmp_path, record_property):
+    source = tmp_path / "source.txt"
+    source.write_text("【第1章】 标题", encoding="gb18030")
+    before = _file_snapshot(source)
+    page = TextMergePage()
+    qtbot.addWidget(page)
+    page.chapter_source_edit.setText(str(source))
+    page.chapter_output_edit.setText(str(source))
+    page.chapter_overwrite_check.setChecked(True)
+    with qtbot.waitSignal(page.chapter_finished, timeout=5000) as completed:
+        page.start_chapter_normalization()
+    assert not completed.args[0].success
+    assert completed.args[0].errors[0].code == "source_output_conflict"
+    assert "[source_output_conflict]" in page.chapter_summary.toPlainText()
+    after = _file_snapshot(source)
+    record_property("integrity", json.dumps({str(source): {"before": before, "after": after}}))
+    assert after == before and list(tmp_path.iterdir()) == [source]
+
+
+def test_T25_gui_rejects_entire_colliding_batch_through_real_service(
+    qtbot, tmp_path, record_property
+):
+    sources = []
+    for index, author in enumerate(["0", "A", "a"]):
+        path = tmp_path / f"[{author}] book{index}.txt"
+        path.write_text("人工正文", encoding="utf-8")
+        sources.append(path)
+    before = {str(path): _file_snapshot(path) for path in sources}
+    page = TextMergePage()
+    qtbot.addWidget(page)
+    page.source_edit.setText(str(tmp_path))
+    page.overwrite_check.setChecked(True)
+    with qtbot.waitSignal(page.merge_finished, timeout=5000) as completed:
+        page.start_merge()
+    assert not completed.args[0].success and not completed.args[0].files
+    assert completed.args[0].errors[0].code == "output_collision"
+    assert "[output_collision]" in page.result_summary.toPlainText()
+    assert not (tmp_path / "EbookToolbox-合集").exists()
+    after = {str(path): _file_snapshot(path) for path in sources}
+    record_property(
+        "integrity",
+        json.dumps({path: {"before": before[path], "after": after[path]} for path in before}),
+    )
+    assert after == before

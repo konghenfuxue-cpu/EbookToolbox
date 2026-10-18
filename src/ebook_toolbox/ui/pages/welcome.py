@@ -1,11 +1,10 @@
 """Application welcome page."""
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 
 class WelcomePage(QWidget):
-    """Introduce the application and reserve space for recent tasks."""
+    """Introduce available tools and explain the task report boundary."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -19,22 +18,11 @@ class WelcomePage(QWidget):
         title.setObjectName("welcomeTitle")
         title.setStyleSheet("font-size: 24px; font-weight: 600;")
         description = QLabel(
-            "集中管理 EPUB、TXT 与漫画处理工作流。当前版本已完成应用基础架构，"
-            "实际处理功能将在后续阶段提供。"
+            "已提供 EPUB 目录修复、图片压缩、综合修复与 TXT 工具。"
+            "漫画工具暂未开放。处理记录请到“检测报告”查看；未导出的记录仅保留当前会话。"
         )
         description.setWordWrap(True)
 
-        recent_tasks = QFrame()
-        recent_tasks.setObjectName("recentTasks")
-        recent_tasks.setFrameShape(QFrame.Shape.StyledPanel)
-        recent_layout = QVBoxLayout(recent_tasks)
-        recent_title = QLabel("最近任务")
-        recent_title.setStyleSheet("font-size: 18px; font-weight: 600;")
-        empty_message = QLabel("暂无任务")
-        empty_message.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        recent_layout.addWidget(recent_title)
-        recent_layout.addWidget(empty_message, 1)
-
         layout.addWidget(title)
         layout.addWidget(description)
-        layout.addWidget(recent_tasks, 1)
+        layout.addStretch()

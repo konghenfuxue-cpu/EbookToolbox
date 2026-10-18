@@ -8,6 +8,7 @@ from datetime import datetime
 from PySide6.QtCore import QObject, Qt, Signal, Slot
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QFileDialog,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -18,6 +19,20 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from ebook_toolbox.services.report_export import export_session_report
+
+_CHECK_NAMES = {
+    "internal_structure": "内部结构检查",
+    "calibre_metadata": "Calibre 元数据读取",
+    "epubcheck": "EPUBCheck 标准校验",
+}
+_CHECK_STATUSES = {
+    "passed": "通过",
+    "failed": "失败",
+    "not_run": "未运行",
+    "not_installed": "未安装",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +46,7 @@ class ReportEntry:
     success: bool
     warnings: tuple[str, ...] = ()
     errors: tuple[str, ...] = ()
+    checks: tuple[tuple[str, str], ...] = ()
 
 
 class ReportStore(QObject):
@@ -73,7 +89,8 @@ class DetectionReportPage(QWidget):
         title = QLabel("检测报告")
         title.setStyleSheet("font-size: 24px; font-weight: 600;")
         description = QLabel(
-            "汇总本次启动以来已完成的 EPUB 任务。报告仅保存在本次会话中，不会读取或修改原文件。"
+            "汇总本次启动以来已完成的任务。报告可导出为 JSON；"
+            "未导出的报告仅保存在本次会话中。导出不会读取或修改原文件。"
         )
         description.setWordWrap(True)
         layout.addWidget(title)
@@ -85,9 +102,18 @@ class DetectionReportPage(QWidget):
         self.clear_button = QPushButton("清空本次报告")
         self.clear_button.setObjectName("clearDetectionReportsButton")
         self.clear_button.clicked.connect(self._report_store.clear)
+        self.export_button = QPushButton("导出本次报告…")
+        self.export_button.setObjectName("exportDetectionReportsButton")
+        self.export_button.clicked.connect(self._export_report)
         actions.addWidget(self.summary_label, 1)
+        actions.addWidget(self.export_button)
         actions.addWidget(self.clear_button)
         layout.addLayout(actions)
+        self.export_status_label = QLabel()
+        self.export_status_label.setObjectName("detectionReportExportStatus")
+        self.export_status_label.setWordWrap(True)
+        self.export_status_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(self.export_status_label)
 
         self.report_table = QTableWidget(0, 6)
         self.report_table.setObjectName("detectionReportTable")
@@ -108,7 +134,7 @@ class DetectionReportPage(QWidget):
         self.details.setObjectName("detectionReportDetails")
         self.details.setReadOnly(True)
         self.details.setMaximumHeight(128)
-        self.details.setPlaceholderText("选择一条报告以查看 warning 和 error 详情。")
+        self.details.setPlaceholderText("选择一条报告以查看检查范围、警告和错误详情。")
         layout.addWidget(self.details)
 
         self._report_store.changed.connect(self._render_entries)
@@ -119,6 +145,7 @@ class DetectionReportPage(QWidget):
         self._visible_entries = self._report_store.entries
         self.report_table.setRowCount(0)
         self.details.clear()
+        self.export_status_label.clear()
 
         successful = sum(entry.success for entry in self._visible_entries)
         failed = len(self._visible_entries) - successful
@@ -149,6 +176,33 @@ class DetectionReportPage(QWidget):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.report_table.setItem(row, column, item)
         self.clear_button.setEnabled(bool(self._visible_entries))
+        self.export_button.setEnabled(bool(self._visible_entries))
+
+    @Slot()
+    def _export_report(self) -> None:
+        entries = self._report_store.entries
+        if not entries:
+            return
+        self.export_status_label.clear()
+        destination, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "导出本次会话报告（请选择新文件名）",
+            f"EbookToolbox-检测报告-{datetime.now():%Y%m%d-%H%M%S}.json",
+            "JSON 报告 (*.json)",
+            options=QFileDialog.Option.DontConfirmOverwrite,
+        )
+        if not destination:
+            return
+        try:
+            exported = export_session_report(entries, destination)
+        except FileExistsError:
+            self.export_status_label.setText("导出失败：目标路径已存在，请另选新文件名。")
+        except (OSError, TypeError, ValueError) as exc:
+            self.export_status_label.setText(
+                f"导出失败：{exc}。若已创建目标文件，可能是不完整报告；请另选新文件名重试。"
+            )
+        else:
+            self.export_status_label.setText(f"已导出本次会话的 {len(entries)} 条报告：{exported}")
 
     @Slot()
     def _show_selected_details(self) -> None:
@@ -168,6 +222,14 @@ class DetectionReportPage(QWidget):
         ]
         if entry.output:
             lines.append(f"输出：{entry.output}")
+        if entry.checks:
+            lines.extend(("", "检查范围（内部检查不等同 EPUB 标准校验）："))
+            lines.extend(
+                f"{_CHECK_NAMES.get(name, name)}：{_CHECK_STATUSES.get(status, status)}"
+                for name, status in entry.checks
+            )
+        else:
+            lines.extend(("", "检查范围：本任务未记录检查项。"))
         if entry.warnings:
             lines.extend(("", "警告：", *entry.warnings))
         if entry.errors:

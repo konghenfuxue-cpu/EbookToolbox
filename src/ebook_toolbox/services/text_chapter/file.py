@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
-import os
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from ebook_toolbox.services.text_merge.merge import _read_text
+from ebook_toolbox.services.text_write_safety import (
+    OwnedTemporary,
+    cleanup_temporary,
+    freeze_path,
+    publish_text,
+    validate_output_plan,
+)
 
 from .models import ChapterIssue, ChapterNormalizationResult
 from .normalize import normalize_chapter_headings
@@ -59,9 +65,11 @@ def normalize_text_file(
 ) -> TextChapterFileResult:
     """Read one TXT and publish a separate normalized copy without touching source."""
 
-    source = Path(request.source)
+    source = freeze_path(request.source)
     output = (
-        Path(request.output) if request.output else source.with_stem(f"{source.stem}（卷章版）")
+        freeze_path(request.output)
+        if request.output
+        else source.with_stem(f"{source.stem}（卷章版）")
     )
     result = TextChapterFileResult(source=source, output=output)
 
@@ -74,14 +82,14 @@ def normalize_text_file(
         if should_cancel is not None and should_cancel():
             raise _TextChapterCancelled
 
-    if not source.is_file() or source.suffix.casefold() != ".txt":
+    if source.suffix.casefold() != ".txt":
         result.output = None
         result.errors.append(ChapterIssue("invalid_source", "输入文件不存在或不是 TXT", 0))
         return result
-    if output.exists() and not request.overwrite:
-        result.errors.append(ChapterIssue("output_exists", "输出文件已存在", 0))
-        return result
+    owned_temporary: OwnedTemporary | None = None
+    published = False
     try:
+        plan = validate_output_plan([source], [output], overwrite=request.overwrite)
         check_cancelled()
         report("reading", 0)
         text = _read_text(source)
@@ -93,29 +101,40 @@ def normalize_text_file(
         check_cancelled()
         report("writing", 2)
         with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8-sig", newline="", dir=output.parent, delete=False
+            mode="w",
+            encoding="utf-8-sig",
+            newline="",
+            dir=output.parent,
+            suffix=".tmp",
+            delete=False,
         ) as temporary:
-            temporary_path = Path(temporary.name)
+            owned_temporary = OwnedTemporary.capture(temporary)
             temporary.write(normalized.text)
         result.completed_stages = 3
         check_cancelled()
         report("publishing", 3)
-        if request.overwrite:
-            os.replace(temporary_path, output)
-        else:
-            os.link(temporary_path, output)
-            temporary_path.unlink()
+        check_cancelled()
+        publish_text(owned_temporary, output, plan=plan)
+        published = True
         report("completed", 4)
     except _TextChapterCancelled:
-        if "temporary_path" in locals():
-            temporary_path.unlink(missing_ok=True)
         result.cancelled = True
         return result
     except (OSError, UnicodeError) as exc:
-        if "temporary_path" in locals():
-            temporary_path.unlink(missing_ok=True)
-        result.errors.append(ChapterIssue(type(exc).__name__, str(exc), 0))
+        if getattr(exc, "code", None) == "invalid_source":
+            result.output = None
+        result.errors.append(ChapterIssue(getattr(exc, "code", type(exc).__name__), str(exc), 0))
         return result
+    finally:
+        cleanup_warning = cleanup_temporary(owned_temporary)
+        if cleanup_warning:
+            issue = ChapterIssue("temp_cleanup_failed", cleanup_warning, 0)
+            if published:
+                normalized.warnings.append(issue)
+            else:
+                # A failed/cancelled conversion has no normalized result to carry warnings.
+                # Keep its primary issue and explicitly report the preserved temporary.
+                result.errors.append(issue)
     result.normalized = normalized
     return result
 

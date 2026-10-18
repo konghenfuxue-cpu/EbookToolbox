@@ -135,13 +135,15 @@ def _copy_info(info: zipfile.ZipInfo, filename: str) -> zipfile.ZipInfo:
 
 
 def _run_calibre_check(path: Path, result: RepairResult) -> None:
+    """Optionally read metadata; this is NOT EPUBCheck or Calibre Check book."""
     executable = shutil.which("ebook-meta")
     if not executable:
         result.calibre_status = "not_installed"
         result.warnings.append(
             RepairWarning(
                 "calibre_not_installed",
-                "Calibre ebook-meta was not found; internal validation passed",
+                "Calibre ebook-meta was not found; metadata reading was not run. "
+                "This optional command is not EPUB standard validation",
             )
         )
         return
@@ -281,7 +283,12 @@ def repair_epub_structure(request: RepairRequest) -> RepairResult:
                             request.wrap_image_spine,
                         )
                         ensure_owned_temporary(temporary_output, temporary_identity)
-                        stats = validate_repaired_epub(temporary_file)
+                        try:
+                            stats = validate_repaired_epub(temporary_file)
+                        except Exception:
+                            result.internal_validation_status = "failed"
+                            raise
+                        result.internal_validation_status = "passed"
                         ensure_owned_temporary(temporary_output, temporary_identity)
                     result.file_count = stats["files"]
                     result.manifest_count = stats["manifest"]
