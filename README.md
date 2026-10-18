@@ -1,5 +1,7 @@
 # EbookToolbox（电子书工具箱）
 
+第一次使用请读 [Windows 下载、解压与使用教程](docs/BEGINNER_GUIDE.md)：从选择正确的 ZIP 到第一次 TXT 合并，包含输出位置、常见错误和恢复方法。最新正式 Release 仍是旧版 v0.1.0；下文新版界面与后续安全修复不全部包含在该下载包中，具体差异见教程。
+
 EbookToolbox 是一个面向个人 Windows 电脑、使用 PySide6 与 Qt Widgets 构建的 EPUB
 工具箱。业务 core 与界面分离，耗时操作通过后台任务运行，避免阻塞主界面。
 
