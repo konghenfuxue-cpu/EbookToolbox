@@ -1,21 +1,75 @@
-# EbookToolbox（电子书工具箱）
+<p align="center">
+  <img src="src/ebook_toolbox/resources/app_icon.svg" width="76" alt="EbookToolbox 应用图标">
+</p>
 
-第一次使用请读 [Windows 下载、解压与使用教程](docs/BEGINNER_GUIDE.md)：从选择正确的 ZIP 到第一次 TXT 合并，包含输出位置、常见错误和恢复方法。最新正式 Release 仍是旧版 v0.1.0；下文新版界面与后续安全修复不全部包含在该下载包中，具体差异见教程。
+<h1 align="center">EbookToolbox · 电子书工具箱</h1>
 
-EbookToolbox 是一个面向个人 Windows 电脑、使用 PySide6 与 Qt Widgets 构建的 EPUB
-工具箱。业务 core 与界面分离，耗时操作通过后台任务运行，避免阻塞主界面。
+<p align="center">在 Windows 上修复 EPUB 目录、压缩图片，整理与合并 TXT。</p>
 
-当前版本为 `0.1.0`，已提供四个正式功能页面：
+<p align="center">
+  <a href="https://github.com/konghenfuxue-cpu/EbookToolbox/releases/download/v0.1.0/EbookToolbox-portable.zip"><img src="https://img.shields.io/badge/Windows-ZIP_v0.1.0-2563eb?style=for-the-badge" alt="下载 Windows 便携 ZIP，旧版 v0.1.0"></a>
+  <a href="docs/BEGINNER_GUIDE.md"><img src="https://img.shields.io/badge/Read-Getting_Started-334155?style=for-the-badge" alt="阅读下载与使用教程"></a>
+</p>
 
-- **EPUB 图片压缩**：压缩 JPEG、PNG 和静态 WebP，可选压缩策略和封面处理；
-  显示逐图片进度与处理计数，可在图片之间或原子发布前安全取消；
-- **EPUB 目录修复**：识别卷章结构并修复 EPUB2 NCX 与 EPUB3 nav 目录，显示五阶段进度，并可在原子发布前安全取消；
-- **EPUB 综合修复**：单本或顺序批量修复内部路径、资源引用和 OPF 结构；检测
-  spine 直接图片，并可显式生成 XHTML 包装页（默认仅报告）；批量任务显示逐文件
-  进度与成功/失败计数，可在当前文件安全完成后取消剩余任务；卷章规范化提供读取、识别、写入、发布四阶段进度，并可在发布前安全取消。
-- **TXT 排版并合并**：按 `[作者]` 文件名分组，自动识别 UTF-8、UTF-16 和 GB18030，
-  清理不可见字符并生成 UTF-8 BOM 作者合集；显示逐文件进度与成功/失败计数，
-  可在当前作者合集安全发布后取消剩余作者。
+**[下载便携版 ZIP](https://github.com/konghenfuxue-cpu/EbookToolbox/releases/tag/v0.1.0) · [从零开始使用](docs/BEGINNER_GUIDE.md) · [验证范围](docs/beginner-verification.md)**
+
+> **先选对版本：**最新正式包仍是旧版 v0.1.0。下方截图和后续 TXT 写入保护来自 `main`，旧包不包含全部改进。需要新版修复时，请按[源码启动教程](docs/BEGINNER_GUIDE.md#新版源码路线可选)操作；两者版本号相同，不能只看“0.1.0”判断内容。
+
+## 实际效果
+
+![真实 Qt 界面完成 EPUB 目录修复，演示文件与脱敏路径](docs/images/toc-result-v2.png)
+
+使用原创的两章 EPUB 完成目录重建。截图来自实际 Qt 程序运行，显示路径已脱敏；不是旧 Release 的界面或真机兼容性证明。
+
+<details>
+<summary>再看 TXT 合并结果与设置页</summary>
+
+![两个原创 TXT 按作者合并为一个新文件，输入原稿保留](docs/images/txt-result-v2.png)
+
+![主题、窗口偏好与构建信息](docs/images/settings.png)
+
+</details>
+
+## 三步开始
+
+| 步骤 | 操作 | 做完后应该看到 |
+| --- | --- | --- |
+| 1 · 下载 | 在 [v0.1.0 的 Assets](https://github.com/konghenfuxue-cpu/EbookToolbox/releases/tag/v0.1.0) 选 `EbookToolbox-portable.zip` | 一个完整 ZIP；`Source code` 不是现成程序 |
+| 2 · 解压 | 右键“全部解压缩”，保留 EXE 与同层 `_internal`，双击 `EbookToolbox.exe` | 左侧工具导航；基本使用不需安装 Python 或管理员权限 |
+| 3 · 试一份副本 | 打开“TXT 工具”，选择装有两个 `[作者]` TXT 的练习文件夹，输出留空并开始合并 | 输入目录下出现 `EbookToolbox-合集`，原 TXT 保留 |
+
+首次练习的文件名、正文、输出核对和错误恢复，按[完整教程](docs/BEGINNER_GUIDE.md#最小练习合并两个-txt)逐项操作。建议 Windows 11 x64；其他环境的验收范围见验证记录。
+
+## 能做什么
+
+| 工具 | 用途 | 输出与注意事项 |
+| --- | --- | --- |
+| EPUB 目录修复 | 识别卷章，重建 NCX / EPUB 3 nav | 生成新 EPUB，仍需用阅读器核对目录跳转 |
+| EPUB 图片压缩 | 压缩 JPEG、PNG、静态 WebP，可选策略与封面处理 | 首先试一本副本，核对画质 |
+| EPUB 综合修复 | 修复可确定的内部路径、资源引用和 OPF 结构，支持顺序批量处理 | 显示逐文件结果；缺失正文不能靠结构修复补回 |
+| TXT 工具 | 按作者排版合并，或识别卷章生成独立副本 | 自动识别 UTF-8、UTF-16、GB18030；新旧包的保护范围有差异 |
+| 检测报告与设置 | 查看会话结果、导出 JSON；新版可设置主题与窗口偏好 | 未导出报告随关闭丢失，JSON 中的本机路径分享前需脱敏 |
+
+各工具单独运行。当前“漫画工具”是保留入口，尚未开放。内部结构检查、可选 Calibre 元数据读取与 EPUBCheck 不是同一件事；当前未集成 EPUBCheck。
+
+## 常见问题
+
+**为什么没有 EXE？** 你可能下载了源码 ZIP。普通便携包在 Release 的 Assets 中，文件名含 `portable`。
+
+**为什么 EXE 提示缺少 DLL 或 `_internal`？** 重新完整解压到新文件夹，不要只复制 EXE。校验值与启动排查见教程，不从下载站补 DLL。
+
+**文件保存在哪里？** TXT 合集默认在输入目录的 `EbookToolbox-合集`；EPUB 修复默认在原文件旁生成新文件，以结果区域显示的位置为准。
+
+**取消后为什么已有部分结果？** 某些批量任务会保留已完成的输出，取消不代表全部回滚。保留原稿，只核对和重试失败项。
+
+**新版截图与我下载的不同？** 正式包仍是旧版；需要后续修复和设置页时，使用源码路线。更多问题见[教程的恢复说明](docs/BEGINNER_GUIDE.md#文件保存更新与恢复)。
+
+## 开发环境运行
+
+开发命令、构建步骤和服务层说明保留在下方。普通用户先按上面的便携包或[源码使用教程](docs/BEGINNER_GUIDE.md)操作即可。
+
+<details>
+<summary>开发、构建与文件安全细节</summary>
 
 所有工具默认都不会覆盖源文件。TXT 合并默认输出到输入目录下独立的
 `EbookToolbox-合集` 文件夹；各工具相互独立，不会被其他页面自动串联执行。
@@ -29,26 +83,6 @@ TXT 服务和界面统一保护输入原稿：即使显式 `overwrite=True`，�
 相对路径在入口固定为绝对路径；输入/输出身份无法确认时拒绝写入。
 不支持以设备名、ADS、尾部点/空格或已有链接作为输出。
 这些检查不提供跨进程锁：请勿在转换期间由其他程序改动输入、输出或其父目录。
-
-## 界面预览
-
-以下截图由当前应用界面生成，使用示例路径，不含真实书籍或个人书库数据。
-
-### 首页
-
-![可用功能与会话报告说明](docs/images/welcome.png)
-
-### EPUB 目录修复
-
-![EPUB 目录修复页面](docs/images/epub-toc.png)
-
-### TXT 工具
-
-![TXT 排版合并与卷章识别页面](docs/images/txt-tools.png)
-
-### 设置
-
-![主题、窗口偏好与检查能力说明](docs/images/settings.png)
 
 ## 独立资源页脚本
 
@@ -247,3 +281,9 @@ tests/                               # core 与 pytest-qt 自动化测试
 ```
 
 `migration_sources/` 仅作为旧脚本迁移参考，不会包含在便携版发布产物中。
+
+</details>
+
+## 来源与致谢
+
+界面基于 PySide6 / Qt Widgets，图片处理使用 Pillow，主题使用 qt-material。依赖与版本见 [pyproject.toml](pyproject.toml)。感谢这些开源项目；第三方组件沿用各自许可。
